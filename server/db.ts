@@ -28,7 +28,7 @@ const pool = new Pool({
 });
 
 // Handle pool errors
-pool.on('error', (err) => {
+pool.on('error', (err: unknown) => {
   console.error('Unexpected database error:', err);
 });
 
