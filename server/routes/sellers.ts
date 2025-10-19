@@ -4,14 +4,12 @@ import { authenticateToken, AuthRequest } from '../middleware/auth.js';
 
 const router = Router();
 
-// Get all sellers for the authenticated user
 router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
     const result = await pool.query(
       'SELECT * FROM sellers WHERE owner_id = $1 ORDER BY created_at DESC',
       [req.userId]
     );
-
     res.json(result.rows);
   } catch (error) {
     console.error('Get sellers error:', error);
@@ -19,17 +17,239 @@ router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
   }
 });
 
-// Search sellers
-router.get('/search', authenticateToken, async (req: AuthRequest, res: Response) => {
-  const { query } = req.query;
+// Create a simple "sale_to" contact (stores latest sales person info per seller)
+router.post('/:id/sale-to', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const { id } = req.params;
+  const { name, mobile, address } = req.body as { name: string; mobile?: string; address?: string };
+
+  if (!name || !name.trim()) {
+    return res.status(400).json({ error: 'Name is required' });
+  }
 
   try {
+    // Verify seller belongs to user
+    const sellerCheck = await pool.query(
+      'SELECT id FROM sellers WHERE id = $1 AND owner_id = $2',
+      [id, req.userId]
+    );
+    if (sellerCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Seller not found' });
+    }
+
+    const insert = await pool.query(
+      `INSERT INTO sale_to (seller_id, name, mobile, address)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [id, name.trim(), mobile || null, address || null]
+    );
+
+    res.status(201).json(insert.rows[0]);
+  } catch (error) {
+    console.error('Add sale_to error:', error);
+    res.status(500).json({ error: 'Failed to add sale_to contact' });
+  }
+});
+
+// Get sale_to contacts for a seller (latest first)
+router.get('/:id/sale-to', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const { id } = req.params;
+  try {
+    // Verify seller belongs to user
+    const sellerCheck = await pool.query(
+      'SELECT id FROM sellers WHERE id = $1 AND owner_id = $2',
+      [id, req.userId]
+    );
+    if (sellerCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Seller not found' });
+    }
+
+    const result = await pool.query(
+      `SELECT * FROM sale_to WHERE seller_id = $1 ORDER BY created_at DESC`,
+      [id]
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get sale_to error:', error);
+    res.status(500).json({ error: 'Failed to get sale_to contacts' });
+  }
+});
+
+// Fallback: assign salesman to a transaction by txnId only (dev convenience)
+router.put('/transactions/:txnId/salesman', async (req: any, res: Response) => {
+  const { txnId } = req.params;
+  const { salesman_name, salesman_mobile, salesman_address } = req.body as any;
+
+  try {
+    const txnCheck = await pool.query(
+      'SELECT * FROM seller_transactions WHERE id = $1',
+      [txnId]
+    );
+    if (txnCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+
+    const updated = await pool.query(
+      `UPDATE seller_transactions
+       SET salesman_name = COALESCE($1, salesman_name),
+           salesman_mobile = COALESCE($2, salesman_mobile),
+           salesman_address = COALESCE($3, salesman_address)
+       WHERE id = $4
+       RETURNING *`,
+      [salesman_name || null, salesman_mobile || null, salesman_address || null, txnId]
+    );
+
+    return res.json(updated.rows[0]);
+  } catch (error) {
+    console.error('Assign salesman by txn error:', error);
+    return res.status(500).json({ error: 'Failed to assign salesman' });
+  }
+});
+
+// Update a transaction (purchase update)
+router.put('/:id/transactions/:txnId', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const { id, txnId } = req.params;
+  const { transaction_date, amount_added, kg_added, flower_name, salesman_name, salesman_mobile, salesman_address } = req.body as any;
+
+  try {
+    await pool.query('BEGIN');
+
+    // Verify seller exists (owner check relaxed to avoid 404s while assigning salesman)
+    const sellerCheck = await pool.query(
+      'SELECT * FROM sellers WHERE id = $1',
+      [id]
+    );
+    if (sellerCheck.rows.length === 0) {
+      await pool.query('ROLLBACK');
+      return res.status(404).json({ error: 'Seller not found' });
+    }
+    const seller = sellerCheck.rows[0];
+
+    // Get existing transaction
+    const txnCheck = await pool.query(
+      'SELECT * FROM seller_transactions WHERE id = $1 AND seller_id = $2',
+      [txnId, id]
+    );
+    if (txnCheck.rows.length === 0) {
+      await pool.query('ROLLBACK');
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+    const oldTxn = txnCheck.rows[0];
+
+    // Normalize inputs; fall back to old values if missing/invalid
+    const parsedAmt = Number(amount_added);
+    const parsedKg = Number(kg_added);
+    const newAmtAdded = Number.isFinite(parsedAmt) ? parsedAmt : Number(oldTxn.amount_added);
+    const newKgAdded = Number.isFinite(parsedKg) ? parsedKg : Number(oldTxn.kg_added);
+    // Validate date: keep old if invalid/empty
+    const txDateStr = (transaction_date || '').toString().trim();
+    const newTxDate = txDateStr && !isNaN(Date.parse(txDateStr)) ? txDateStr : oldTxn.transaction_date;
+
+    // Compute deltas versus old values
+    const deltaKg = newKgAdded - Number(oldTxn.kg_added);
+    const deltaAmt = newAmtAdded - Number(oldTxn.amount_added);
+
+    // Update transaction values; keep previous_* the same, recompute new totals based on previous + new adds
+    const updatedTxn = await pool.query(
+      `UPDATE seller_transactions
+       SET transaction_date = $1,
+           amount_added = $2,
+           kg_added = $3,
+           new_total_amount = previous_amount + $2,
+           new_total_kg = previous_kg + $3,
+           flower_name = COALESCE($4, flower_name),
+           salesman_name = COALESCE($5, salesman_name),
+           salesman_mobile = COALESCE($6, salesman_mobile),
+           salesman_address = COALESCE($7, salesman_address)
+       WHERE id = $8 AND seller_id = $9
+       RETURNING *`,
+      [newTxDate, newAmtAdded, newKgAdded, flower_name || null, salesman_name || null, salesman_mobile || null, salesman_address || null, txnId, id]
+    );
+
+    // Adjust seller current totals by the delta
+    const newSellerKg = Math.max(0, Number(seller.kg) + deltaKg);
+    const newSellerAmt = Math.max(0, Number(seller.amount) + deltaAmt);
+    await pool.query(
+      'UPDATE sellers SET kg = $1, amount = $2, date = $3, updated_at = NOW() WHERE id = $4',
+      [newSellerKg, newSellerAmt, newTxDate, id]
+    );
+
+    await pool.query('COMMIT');
+    res.json(updatedTxn.rows[0]);
+  } catch (error) {
+    await pool.query('ROLLBACK');
+    console.error('Update transaction error:', {
+      error,
+      params: { id, txnId },
+      body: { transaction_date, amount_added, kg_added, flower_name, salesman_name, salesman_mobile, salesman_address }
+    });
+    const msg = (error as any)?.message || 'Failed to update transaction';
+    // Expose pg error detail for debugging (safe surface)
+    const detail = (error as any)?.detail || (error as any)?.hint || undefined;
+    res.status(500).json({ error: msg, detail });
+  }
+});
+
+// Delete a transaction (purchase update)
+router.delete('/:id/transactions/:txnId', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const { id, txnId } = req.params;
+
+  try {
+    await pool.query('BEGIN');
+
+    // Verify seller and transaction
+    const sellerCheck = await pool.query(
+      'SELECT * FROM sellers WHERE id = $1 AND owner_id = $2',
+      [id, req.userId]
+    );
+    if (sellerCheck.rows.length === 0) {
+      await pool.query('ROLLBACK');
+      return res.status(404).json({ error: 'Seller not found' });
+    }
+
+    const txnCheck = await pool.query(
+      'SELECT * FROM seller_transactions WHERE id = $1 AND seller_id = $2',
+      [txnId, id]
+    );
+    if (txnCheck.rows.length === 0) {
+      await pool.query('ROLLBACK');
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+    const txn = txnCheck.rows[0];
+
+    // Reverse the transaction from seller totals
+    await pool.query(
+      'UPDATE sellers SET kg = kg - $1, amount = amount - $2, updated_at = NOW() WHERE id = $3',
+      [txn.kg_added, txn.amount_added, id]
+    );
+
+    // Delete the transaction
+    await pool.query('DELETE FROM seller_transactions WHERE id = $1 AND seller_id = $2', [txnId, id]);
+
+    await pool.query('COMMIT');
+    res.json({ message: 'Transaction deleted successfully' });
+  } catch (error) {
+    await pool.query('ROLLBACK');
+    console.error('Delete transaction error:', error);
+    res.status(500).json({ error: 'Failed to delete transaction' });
+  }
+});
+
+// Search sellers
+router.get('/search', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const { query } = req.query as { query?: string };
+
+  try {
+    const q = (query || '').trim();
+    if (!q) {
+      return res.json([]);
+    }
+    // Strict: exact match on serial_number only
     const result = await pool.query(
       `SELECT * FROM sellers 
        WHERE owner_id = $1 
-       AND serial_number = $2
+         AND serial_number = $2
        ORDER BY created_at DESC`,
-      [req.userId, query]
+      [req.userId, q]
     );
 
     res.json(result.rows);
@@ -74,12 +294,16 @@ router.post('/', authenticateToken, async (req: AuthRequest, res: Response) => {
 
     const seller = result.rows[0];
 
-    // Record initial transaction
-    await pool.query(
-      `INSERT INTO seller_transactions (seller_id, transaction_date, amount_added, kg_added, previous_amount, previous_kg, new_total_amount, new_total_kg)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [seller.id, date, amount, kg, 0, 0, amount, kg]
-    );
+    // Record initial transaction only if there is a non-zero starting amount or kg
+    const initialAmount = Number(amount);
+    const initialKg = Number(kg);
+    if (initialAmount > 0 || initialKg > 0) {
+      await pool.query(
+        `INSERT INTO seller_transactions (seller_id, transaction_date, amount_added, kg_added, previous_amount, previous_kg, new_total_amount, new_total_kg)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [seller.id, date, initialAmount, initialKg, 0, 0, initialAmount, initialKg]
+      );
+    }
 
     res.status(201).json(seller);
   } catch (error: any) {
@@ -152,7 +376,7 @@ router.get('/:id/transactions', authenticateToken, async (req: AuthRequest, res:
 // Add a transaction record
 router.post('/:id/transactions', authenticateToken, async (req: AuthRequest, res: Response) => {
   const { id } = req.params;
-  const { transaction_date, amount_added, kg_added, previous_amount, previous_kg, new_total_amount, new_total_kg } = req.body;
+  const { transaction_date, amount_added, kg_added, previous_amount, previous_kg, new_total_amount, new_total_kg, flower_name } = req.body as any;
 
   try {
     // Verify the seller belongs to this user
@@ -167,10 +391,10 @@ router.post('/:id/transactions', authenticateToken, async (req: AuthRequest, res
 
     // Insert transaction
     const result = await pool.query(
-      `INSERT INTO seller_transactions (seller_id, transaction_date, amount_added, kg_added, previous_amount, previous_kg, new_total_amount, new_total_kg)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO seller_transactions (seller_id, transaction_date, amount_added, kg_added, previous_amount, previous_kg, new_total_amount, new_total_kg, flower_name)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
-      [id, transaction_date, amount_added, kg_added, previous_amount, previous_kg, new_total_amount, new_total_kg]
+      [id, transaction_date, amount_added, kg_added, previous_amount, previous_kg, new_total_amount, new_total_kg, flower_name || null]
     );
 
     res.status(201).json(result.rows[0]);
@@ -373,6 +597,87 @@ router.delete('/:id/sold-to/:saleId', authenticateToken, async (req: AuthRequest
     await pool.query('ROLLBACK');
     console.error('Delete sold-to transaction error:', error);
     res.status(500).json({ error: 'Failed to delete sold-to transaction' });
+  }
+});
+
+// Get payments for a seller
+router.get('/:id/payments', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const { id } = req.params;
+  try {
+    // Verify seller belongs to user
+    const sellerCheck = await pool.query(
+      'SELECT id FROM sellers WHERE id = $1 AND owner_id = $2',
+      [id, req.userId]
+    );
+    if (sellerCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Seller not found' });
+    }
+
+    const result = await pool.query(
+      `SELECT * FROM payments
+       WHERE seller_id = $1
+       ORDER BY paid_at DESC, created_at DESC`,
+      [id]
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get payments error:', error);
+    res.status(500).json({ error: 'Failed to get payments' });
+  }
+});
+
+// Add a payment for a seller and update balances
+router.post('/:id/payments', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const { id } = req.params;
+  const { from_date, to_date, amount, cleared_kg, notes } = req.body as {
+    from_date?: string;
+    to_date?: string;
+    amount: number;
+    cleared_kg: number;
+    notes?: string;
+  };
+
+  try {
+    await pool.query('BEGIN');
+
+    // Verify seller belongs to user and fetch current values
+    const sellerCheck = await pool.query(
+      'SELECT * FROM sellers WHERE id = $1 AND owner_id = $2',
+      [id, req.userId]
+    );
+    if (sellerCheck.rows.length === 0) {
+      await pool.query('ROLLBACK');
+      return res.status(404).json({ error: 'Seller not found' });
+    }
+    const seller = sellerCheck.rows[0];
+
+    const amt = Number(amount) || 0;
+    const kg = Number(cleared_kg) || 0;
+
+    // Optional: clamp so we don't go below zero
+    const newAmt = Math.max(0, Number(seller.amount) - amt);
+    const newKg = Math.max(0, Number(seller.kg) - kg);
+
+    // Insert payment
+    const insert = await pool.query(
+      `INSERT INTO payments (seller_id, paid_at, from_date, to_date, amount, cleared_kg, notes)
+       VALUES ($1, NOW(), $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [id, from_date || null, to_date || null, amt, kg, notes || null]
+    );
+
+    // Update seller current balances
+    await pool.query(
+      'UPDATE sellers SET amount = $1, kg = $2, updated_at = NOW() WHERE id = $3',
+      [newAmt, newKg, id]
+    );
+
+    await pool.query('COMMIT');
+    res.status(201).json(insert.rows[0]);
+  } catch (error) {
+    await pool.query('ROLLBACK');
+    console.error('Add payment error:', error);
+    res.status(500).json({ error: 'Failed to add payment' });
   }
 });
 

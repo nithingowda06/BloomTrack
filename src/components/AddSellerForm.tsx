@@ -51,6 +51,15 @@ export const AddSellerForm = ({ onSuccess }: AddSellerFormProps) => {
     <form onSubmit={handleSubmit} className="space-y-4">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="space-y-2">
+          <Label htmlFor="serial_number">Serial Number *</Label>
+          <Input
+            id="serial_number"
+            value={formData.serial_number}
+            onChange={(e) => setFormData({ ...formData, serial_number: e.target.value })}
+            required
+          />
+        </div>
+        <div className="space-y-2">
           <Label htmlFor="name">Seller Name *</Label>
           <Input
             id="name"
@@ -66,15 +75,6 @@ export const AddSellerForm = ({ onSuccess }: AddSellerFormProps) => {
             type="tel"
             value={formData.mobile}
             onChange={(e) => setFormData({ ...formData, mobile: e.target.value })}
-            required
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="serial_number">Serial Number *</Label>
-          <Input
-            id="serial_number"
-            value={formData.serial_number}
-            onChange={(e) => setFormData({ ...formData, serial_number: e.target.value })}
             required
           />
         </div>

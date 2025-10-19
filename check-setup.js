@@ -47,7 +47,7 @@ if (fs.existsSync('node_modules')) {
   console.log('   ✅ node_modules exists');
   
   // Check for key dependencies
-  const requiredDeps = ['express', 'pg', 'bcrypt', 'jsonwebtoken', 'cors'];
+  const requiredDeps = ['express', 'pg', 'bcryptjs', 'jsonwebtoken', 'cors'];
   let missingDeps = [];
   
   requiredDeps.forEach(dep => {

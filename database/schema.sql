@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS sellers (
   owner_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   mobile TEXT NOT NULL,
-  serial_number TEXT NOT NULL UNIQUE,
+  serial_number TEXT NOT NULL,
   address TEXT NOT NULL,
   date DATE NOT NULL DEFAULT CURRENT_DATE,
   amount DECIMAL(10, 2) NOT NULL DEFAULT 0,
@@ -35,6 +35,9 @@ CREATE INDEX IF NOT EXISTS idx_sellers_owner_id ON sellers(owner_id);
 CREATE INDEX IF NOT EXISTS idx_sellers_serial_number ON sellers(serial_number);
 CREATE INDEX IF NOT EXISTS idx_sellers_name ON sellers(name);
 CREATE INDEX IF NOT EXISTS idx_sellers_mobile ON sellers(mobile);
+
+-- Ensure serial_number is unique per owner (not globally)
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_owner_serial ON sellers (owner_id, serial_number);
 
 -- Create trigger for updated_at
 CREATE OR REPLACE FUNCTION update_updated_at_column()

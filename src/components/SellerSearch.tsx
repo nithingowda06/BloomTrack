@@ -73,4 +73,4 @@ export const SellerSearch = ({ onSearch }: SellerSearchProps) => {
       </CardContent>
     </Card>
   );
-};
+}

@@ -4,8 +4,12 @@ import dotenv from 'dotenv';
 import authRoutes from './routes/auth.js';
 import profileRoutes from './routes/profiles.js';
 import sellerRoutes from './routes/sellers.js';
+import adminRoutes from './routes/admin.js';
+import reportsRoutes from './routes/reports.js';
 
 dotenv.config();
+
+// restart marker: pick up updated .env
 
 // Check if JWT_SECRET is configured
 if (!process.env.JWT_SECRET || process.env.JWT_SECRET.includes('your_secure_random_secret_key_here')) {
@@ -26,6 +30,8 @@ app.use(express.json());
 app.use('/api/auth', authRoutes);
 app.use('/api/profiles', profileRoutes);
 app.use('/api/sellers', sellerRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/reports', reportsRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

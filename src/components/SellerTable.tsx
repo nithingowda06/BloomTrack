@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
-import { sellerApi } from "@/lib/api";
+import React, { useEffect, useState } from "react";
+import { sellerApi, profileApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Edit, Trash2, Plus, ShoppingCart } from "lucide-react";
+import { Edit, Plus, Trash2, Download } from "lucide-react";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -22,6 +22,15 @@ interface Seller {
   kg: number;
 }
 
+interface SaleToContact {
+  id: string;
+  seller_id: string;
+  name: string;
+  mobile?: string;
+  address?: string;
+  created_at: string;
+}
+
 interface SellerTableProps {
   sellers: Seller[];
   onUpdate: () => void;
@@ -38,6 +47,9 @@ interface Transaction {
   new_total_amount: number;
   new_total_kg: number;
   created_at: string;
+  salesman_name?: string;
+  salesman_mobile?: string;
+  salesman_address?: string;
 }
 
 interface SoldToTransaction {
@@ -81,6 +93,13 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
   const [loadingSoldTo, setLoadingSoldTo] = useState(false);
   const [editingSale, setEditingSale] = useState<SoldToTransaction | null>(null);
   const [deletingSale, setDeletingSale] = useState<SoldToTransaction | null>(null);
+  // Add Data dialog mode: receive (add to stock) or sale (sold to)
+  const [addMode, setAddMode] = useState<'receive' | 'sale'>('receive');
+  // Flower selection for Add Data (receive)
+  const [flowerChoice, setFlowerChoice] = useState<string>('');
+  const [flowerOther, setFlowerOther] = useState<string>('');
+  // Inline badges for per-update sales acknowledgement
+  const [soldBadges, setSoldBadges] = useState<Record<string, string>>({});
   // Expanded updates per seller (inline rows)
   const [expandedSellerId, setExpandedSellerId] = useState<string | null>(null);
   const [expandedTransactions, setExpandedTransactions] = useState<Record<string, Transaction[]>>({});
@@ -96,12 +115,41 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
   // Single-update dialog state
   const [selectedTxn, setSelectedTxn] = useState<Transaction | null>(null);
   const [selectedTxnSeller, setSelectedTxnSeller] = useState<Seller | null>(null);
+  // Edit/Delete a single purchase transaction
+  const [editingTxn, setEditingTxn] = useState<Transaction | null>(null);
+  const [editingTxnSeller, setEditingTxnSeller] = useState<Seller | null>(null);
+  const [deletingTxn, setDeletingTxn] = useState<Transaction | null>(null);
+  const [deletingTxnSeller, setDeletingTxnSeller] = useState<Seller | null>(null);
   // Table-level transactions map for always-visible child rows
   const [tableTransactions, setTableTransactions] = useState<Record<string, Transaction[]>>({});
   // Table-level sold-to map for totals at bottom
   const [tableSoldTo, setTableSoldTo] = useState<Record<string, SoldToTransaction[]>>({});
+  // Simple Sales prompt (from Updates row action)
+  const [salesPromptOpen, setSalesPromptOpen] = useState(false);
+  const [salesPromptData, setSalesPromptData] = useState<{ name: string; number?: string; address?: string; weight?: number; amount?: number; full?: boolean }>({ name: '' });
+  const [salesTxn, setSalesTxn] = useState<Transaction | null>(null);
+  const [salesSeller, setSalesSeller] = useState<Seller | null>(null);
+  const [saleToForView, setSaleToForView] = useState<SaleToContact[]>([]);
+  const [salesSaving, setSalesSaving] = useState(false);
+  // Persist/restore Sold status per update using localStorage
+  const SOLD_BADGES_KEY = 'seller_sold_badges_v1';
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(SOLD_BADGES_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') setSoldBadges(parsed);
+      }
+    } catch {}
+  }, []);
+  const writeSoldBadges = (next: Record<string, string>) => {
+    try { localStorage.setItem(SOLD_BADGES_KEY, JSON.stringify(next)); } catch {}
+  };
+  // Table-level payments map (persisted to Neon)
+  const [tablePayments, setTablePayments] = useState<Record<string, Array<{ id: string; paid_at: string; from_date?: string; to_date?: string; amount: number; cleared_kg: number }>>>({});
   // Period clear (local-only) UI state
   const [clearConfirm, setClearConfirm] = useState(false);
+  
 
   // Helpers for local clear timestamps (per-seller for dialogs)
   const getClearKey = (sellerId: string) => `seller_clear_${sellerId}`;
@@ -113,30 +161,118 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
     }
   };
 
+
+  
+
   // Generate PDF for a specific seller (helper used by row action)
   const handleDownloadSellerPdfForSeller = async (seller: Seller) => {
     try {
-      const [txns, soldTo] = await Promise.all([
+      const [txns, soldTo, profile] = await Promise.all([
         sellerApi.getTransactions(seller.id),
         sellerApi.getSoldToTransactions(seller.id),
+        profileApi.get().catch(() => null),
       ]);
+      // Compute totals from transactions
+      const totalKg = (txns || []).reduce((sum, t: any) => sum + Number(t.kg_added || 0), 0);
+      const totalAmount = (txns || []).reduce((sum, t: any) => sum + Number(t.amount_added || 0), 0);
 
-      const purchasesRows = (txns || []).map((t, i) => `
-        <tr>
-          <td style="padding:6px;border:1px solid #ddd;">${i + 1}</td>
-          <td style="padding:6px;border:1px solid #ddd;">${new Date((t as any).created_at || t.transaction_date).toLocaleDateString()}</td>
-          <td style="padding:6px;border:1px solid #ddd;text-align:right;">${Number(t.kg_added||0).toFixed(2)} kg</td>
-          <td style="padding:6px;border:1px solid #ddd;text-align:right;">₹${Number(t.amount_added||0).toFixed(2)}</td>
-        </tr>`).join('');
+      // Build sales map keyed by YYYY-MM-DD -> single latest customer name
+      const toYMD = (v: any) => {
+        const s = String(v || '').trim();
+        if (!s) return '';
+        // ISO: YYYY-MM-DD[...] -> YYYY-MM-DD
+        if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+        // DMY: DD/MM/YYYY -> YYYY-MM-DD
+        const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+        if (m) {
+          const [_, dd, mm, yyyy] = m;
+          return `${yyyy}-${mm}-${dd}`;
+        }
+        // Fallback Date parse
+        const d = new Date(s);
+        return isNaN(d.getTime()) ? s : d.toISOString().slice(0, 10);
+      };
+      // Helper: normalize any input date to local YYYY-MM-DD (no timezone shift)
+      const localYMD = (v: any) => {
+        const s = String(v || '').trim();
+        if (!s) return '';
+        let y: number, m: number, d: number;
+        if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+          const [yy, mm, dd] = s.slice(0,10).split('-');
+          y = Number(yy); m = Number(mm); d = Number(dd);
+        } else if (/^(\d{2})\/(\d{2})\/(\d{4})$/.test(s)) {
+          const [, dd, mm, yyyy] = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/)!;
+          y = Number(yyyy); m = Number(mm); d = Number(dd);
+        } else {
+          const dt = new Date(s);
+          if (isNaN(dt.getTime())) return '';
+          y = dt.getFullYear(); m = dt.getMonth() + 1; d = dt.getDate();
+        }
+        const dtLocal = new Date(y, (m || 1) - 1, d || 1);
+        const yy2 = dtLocal.getFullYear();
+        const mm2 = String(dtLocal.getMonth() + 1).padStart(2, '0');
+        const dd2 = String(dtLocal.getDate()).padStart(2, '0');
+        return `${yy2}-${mm2}-${dd2}`;
+      };
 
-      const salesRows = (soldTo || []).map((t, i) => `
+      // UI-equivalent calendar-day normalizer: if input has time (ISO with T), use local date; if plain Y-M-D, keep literal; if D/M/Y convert to Y-M-D
+      const calendarYMD = (v: any) => {
+        const s = String(v || '').trim();
+        if (!s) return '';
+        if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
+          const dt = new Date(s);
+          if (isNaN(dt.getTime())) return '';
+          const yy = dt.getFullYear();
+          const mm = String(dt.getMonth() + 1).padStart(2, '0');
+          const dd = String(dt.getDate()).padStart(2, '0');
+          return `${yy}-${mm}-${dd}`;
+        }
+        if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+        const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+        if (m) { const [, dd, mm, yyyy] = m; return `${yyyy}-${mm}-${dd}`; }
+        // Fallback: try Date and take local calendar day
+        const dt = new Date(s);
+        if (isNaN(dt.getTime())) return '';
+        const yy = dt.getFullYear();
+        const mm = String(dt.getMonth() + 1).padStart(2, '0');
+        const dd = String(dt.getDate()).padStart(2, '0');
+        return `${yy}-${mm}-${dd}`;
+      };
+
+      const salesByDate = new Map<string, string>();
+      (soldTo || [])
+        .slice()
+        .sort((a: any, b: any) => new Date(a.sale_date).getTime() - new Date(b.sale_date).getTime())
+        .forEach((s: any) => {
+          const key = calendarYMD((s as any).sale_date);
+          const name = String((s as any).customer_name || '').trim();
+          if (!name) return;
+          // Later entries overwrite, leaving the latest name for that date
+          salesByDate.set(key, name);
+        });
+
+      const purchasesRows = (txns || []).map((t, i) => {
+        const dateKey = calendarYMD((t as any).transaction_date);
+        const soldToNamesForDate = (() => {
+          const byTxn = String(((t as any).salesman_name || '').trim())
+            || String(((soldBadges as any)?.[(t as any).id] || '').trim());
+          return byTxn || (salesByDate.get(dateKey) || '');
+        })();
+        const dateDisplay = (() => { const [yy, mm, dd] = String(dateKey||'').split('-'); return (yy&&mm&&dd) ? `${dd}/${mm}/${yy}` : String(dateKey||''); })();
+        return `
         <tr>
-          <td style="padding:6px;border:1px solid #ddd;">${i + 1}</td>
-          <td style="padding:6px;border:1px solid #ddd;">${t.customer_name || ''}</td>
-          <td style="padding:6px;border:1px solid #ddd;">${new Date((t as any).created_at || t.sale_date).toLocaleDateString()}</td>
-          <td style="padding:6px;border:1px solid #ddd;text-align:right;">${Number(t.kg_sold||0).toFixed(2)} kg</td>
-          <td style="padding:6px;border:1px solid #ddd;text-align:right;">₹${Number(t.amount_sold||0).toFixed(2)}</td>
-        </tr>`).join('');
+          <td style=\"padding:6px;border:1px solid #ddd;\">${i + 1}</td>
+          <td style=\"padding:6px;border:1px solid #ddd;\">${dateDisplay}</td>
+          <td style=\"padding:6px;border:1px solid #ddd;\">${(t as any).flower_name || ''}</td>
+          <td style=\"padding:6px;border:1px solid #ddd;text-align:right;\">${Number(t.kg_added||0).toFixed(2)} kg</td>
+          <td style=\"padding:6px;border:1px solid #ddd;text-align:right;\">₹${Number(t.amount_added||0).toFixed(2)}</td>
+          <td style=\\\"padding:6px;border:1px solid #ddd;\\\">${soldToNamesForDate}</td>
+        </tr>`;
+      }).join('');
+
+      const shopName = (profile && ((profile as any).shop_name || (profile as any).shopName)) || '';
+      const ownerName = (profile && ((profile as any).owner_name || (profile as any).ownerName)) || '';
+      const ownerMobile = (profile && (profile as any).mobile) || '';
 
       const html = `
         <html>
@@ -157,15 +293,15 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
           </head>
           <body>
             <h1>Seller Report - ${seller.serial_number} · ${seller.name}</h1>
-            <div class="muted">Mobile: ${seller.mobile || ''} · Date: ${new Date(seller.date).toLocaleDateString()}</div>
+            <div class="muted">Mobile: ${seller.mobile || ''} · Date: ${(() => { const s = String((seller as any).date||''); const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? `${m[3]}/${m[2]}/${m[1]}` : s; })()}</div>
             <div class="grid">
               <div class="card">
                 <div class="muted">Weight</div>
-                <div style="font-weight:700;">${Number(seller.kg).toFixed(2)} kg</div>
+                <div style="font-weight:700;">${Number(totalKg).toFixed(2)} kg</div>
               </div>
               <div class="card">
                 <div class="muted">Amount</div>
-                <div style="font-weight:700;">₹${Number(seller.amount).toFixed(2)}</div>
+                <div style="font-weight:700;">₹${Number(totalAmount).toFixed(2)}</div>
               </div>
             </div>
 
@@ -175,28 +311,14 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                 <tr>
                   <th>#</th>
                   <th>Date</th>
+                  <th>Flower</th>
                   <th style="text-align:right;">Weight (kg)</th>
                   <th style="text-align:right;">Amount (₹)</th>
+                  <th>Sold To</th>
                 </tr>
               </thead>
               <tbody>
-                ${purchasesRows || '<tr><td colspan="4" style="padding:10px;text-align:center;color:#6b7280;">No purchases</td></tr>'}
-              </tbody>
-            </table>
-
-            <h2>Sales</h2>
-            <table>
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Customer</th>
-                  <th>Date</th>
-                  <th style="text-align:right;">Weight (kg)</th>
-                  <th style="text-align:right;">Amount (₹)</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${salesRows || '<tr><td colspan="5" style="padding:10px;text-align:center;color:#6b7280;">No sales</td></tr>'}
+                ${purchasesRows || '<tr><td colspan="6" style="padding:10px;text-align:center;color:#6b7280;">No purchases</td></tr>'}
               </tbody>
             </table>
 
@@ -229,27 +351,95 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
     }
     setPdfLoading(true);
     try {
-      const [txns, soldTo] = await Promise.all([
+      const [txns, soldTo, profile] = await Promise.all([
         sellerApi.getTransactions(seller.id),
         sellerApi.getSoldToTransactions(seller.id),
+        profileApi.get().catch(() => null),
       ]);
 
-      const purchasesRows = (txns || []).map((t, i) => `
-        <tr>
-          <td style="padding:6px;border:1px solid #ddd;">${i + 1}</td>
-          <td style="padding:6px;border:1px solid #ddd;">${new Date((t as any).created_at || t.transaction_date).toLocaleDateString()}</td>
-          <td style="padding:6px;border:1px solid #ddd;text-align:right;">${Number(t.kg_added||0).toFixed(2)} kg</td>
-          <td style="padding:6px;border:1px solid #ddd;text-align:right;">₹${Number(t.amount_added||0).toFixed(2)}</td>
-        </tr>`).join('');
+      const toYMD2 = (v: any) => {
+        const s = String(v || '').trim();
+        if (!s) return '';
+        if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+        const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+        if (m) {
+          const [_, dd, mm, yyyy] = m;
+          return `${yyyy}-${mm}-${dd}`;
+        }
+        const d = new Date(s);
+        return isNaN(d.getTime()) ? s : d.toISOString().slice(0, 10);
+      };
+      // Helpers to match UI calendar-day behavior in this generator too
+      const localYMD2 = (v: any) => {
+        const s = String(v || '').trim();
+        if (!s) return '';
+        let y: number, m: number, d: number;
+        if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+          const [yy, mm, dd] = s.slice(0,10).split('-');
+          y = Number(yy); m = Number(mm); d = Number(dd);
+        } else if (/^(\d{2})\/(\d{2})\/(\d{4})$/.test(s)) {
+          const [, dd, mm, yyyy] = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/)!;
+          y = Number(yyyy); m = Number(mm); d = Number(dd);
+        } else {
+          const dt = new Date(s);
+          if (isNaN(dt.getTime())) return '';
+          y = dt.getFullYear(); m = dt.getMonth() + 1; d = dt.getDate();
+        }
+        const dtLocal = new Date(y, (m || 1) - 1, d || 1);
+        const yy2 = dtLocal.getFullYear();
+        const mm2 = String(dtLocal.getMonth() + 1).padStart(2, '0');
+        const dd2 = String(dtLocal.getDate()).padStart(2, '0');
+        return `${yy2}-${mm2}-${dd2}`;
+      };
+      const calendarYMD2 = (v: any) => {
+        const s = String(v || '').trim();
+        if (!s) return '';
+        if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
+          const dt = new Date(s);
+          if (isNaN(dt.getTime())) return '';
+          const yy = dt.getFullYear();
+          const mm = String(dt.getMonth() + 1).padStart(2, '0');
+          const dd = String(dt.getDate()).padStart(2, '0');
+          return `${yy}-${mm}-${dd}`;
+        }
+        if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+        const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+        if (m) { const [, dd, mm, yyyy] = m; return `${yyyy}-${mm}-${dd}`; }
+        const dt = new Date(s);
+        if (isNaN(dt.getTime())) return '';
+        const yy = dt.getFullYear();
+        const mm = String(dt.getMonth() + 1).padStart(2, '0');
+        const dd = String(dt.getDate()).padStart(2, '0');
+        return `${yy}-${mm}-${dd}`;
+      };
+      const salesByDate2 = new Map<string, string>();
+      (soldTo || [])
+        .slice()
+        .sort((a: any, b: any) => new Date(a.sale_date).getTime() - new Date(b.sale_date).getTime())
+        .forEach((s: any) => {
+          const key = calendarYMD((s as any).sale_date);
+          const name = String((s as any).customer_name || '').trim();
+          if (!name) return;
+          salesByDate2.set(key, name);
+        });
 
-      const salesRows = (soldTo || []).map((t, i) => `
+      const purchasesRows = (txns || []).map((t, i) => {
+        const dateKey = calendarYMD((t as any).transaction_date);
+        const soldToNamesForDate = (() => {
+          const byTxn = String(((t as any).salesman_name || '').trim())
+            || String(((soldBadges as any)?.[(t as any).id] || '').trim());
+          return byTxn || (salesByDate2.get(dateKey) || '');
+        })();
+        const dateDisplay = (() => { const [yy, mm, dd] = String(dateKey||'').split('-'); return (yy&&mm&&dd) ? `${dd}/${mm}/${yy}` : String(dateKey||'`'); })();
+        return `
         <tr>
-          <td style="padding:6px;border:1px solid #ddd;">${i + 1}</td>
-          <td style="padding:6px;border:1px solid #ddd;">${t.customer_name || ''}</td>
-          <td style="padding:6px;border:1px solid #ddd;">${new Date((t as any).created_at || t.sale_date).toLocaleDateString()}</td>
-          <td style="padding:6px;border:1px solid #ddd;text-align:right;">${Number(t.kg_sold||0).toFixed(2)} kg</td>
-          <td style="padding:6px;border:1px solid #ddd;text-align:right;">₹${Number(t.amount_sold||0).toFixed(2)}</td>
-        </tr>`).join('');
+          <td style=\"padding:6px;border:1px solid #ddd;\">${i + 1}</td>
+          <td style=\"padding:6px;border:1px solid #ddd;\">${dateDisplay}</td>
+          <td style=\"padding:6px;border:1px solid #ddd;text-align:right;\">${Number(t.kg_added||0).toFixed(2)} kg</td>
+          <td style=\"padding:6px;border:1px solid #ddd;text-align:right;\">₹${Number(t.amount_added||0).toFixed(2)}</td>
+          <td style=\\\"padding:6px;border:1px solid #ddd;\\\">${soldToNamesForDate}</td>
+        </tr>`;
+      }).join('');
 
       const html = `
         <html>
@@ -270,7 +460,7 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
           </head>
           <body>
             <h1>Seller Report - ${seller.serial_number} · ${seller.name}</h1>
-            <div class="muted">Mobile: ${seller.mobile || ''} · Date: ${new Date(seller.date).toLocaleDateString()}</div>
+            <div class="muted">Mobile: ${seller.mobile || ''} · Date: ${(() => { const s = String((seller as any).date||''); const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? `${m[3]}/${m[2]}/${m[1]}` : s; })()}</div>
             <div class="grid">
               <div class="card">
                 <div class="muted">Weight</div>
@@ -290,26 +480,11 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                   <th>Date</th>
                   <th style="text-align:right;">Weight (kg)</th>
                   <th style="text-align:right;">Amount (₹)</th>
+                  <th>Sold To</th>
                 </tr>
               </thead>
               <tbody>
-                ${purchasesRows || '<tr><td colspan="4" style="padding:10px;text-align:center;color:#6b7280;">No purchases</td></tr>'}
-              </tbody>
-            </table>
-
-            <h2>Sales</h2>
-            <table>
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Customer</th>
-                  <th>Date</th>
-                  <th style="text-align:right;">Weight (kg)</th>
-                  <th style="text-align:right;">Amount (₹)</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${salesRows || '<tr><td colspan="5" style="padding:10px;text-align:center;color:#6b7280;">No sales</td></tr>'}
+                ${purchasesRows || '<tr><td colspan="5" style="padding:10px;text-align:center;color:#6b7280;">No purchases</td></tr>'}
               </tbody>
             </table>
 
@@ -340,18 +515,57 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
     let ignore = false;
     const loadAll = async () => {
       const map: Record<string, Transaction[]> = {};
+      const badgesFromServer: Record<string, string> = {};
       for (const s of sellers) {
         try {
           const txns = await sellerApi.getTransactions(s.id);
           map[s.id] = txns;
+          // collect any persisted salesman_name to restore badges
+          for (const t of txns || []) {
+            const name = String((t as any).salesman_name || '').trim();
+            if (name) badgesFromServer[(t as any).id] = name;
+          }
         } catch {
           map[s.id] = [];
         }
       }
       if (!ignore) setTableTransactions(map);
+      if (!ignore && Object.keys(badgesFromServer).length > 0) {
+        setSoldBadges((prev) => {
+          const next = { ...prev, ...badgesFromServer };
+          writeSoldBadges(next);
+          return next;
+        });
+      }
     };
     if (sellers && sellers.length > 0) loadAll();
     return () => { ignore = true; };
+  }, [sellers]);
+
+  // Load payments for all sellers shown in Search Results
+  useEffect(() => {
+    let ignore = false;
+    const loadAllPayments = async () => {
+      const map: Record<string, Array<{ id: string; paid_at: string; from_date?: string; to_date?: string; amount: number; cleared_kg: number }>> = {};
+      for (const s of sellers) {
+        try {
+          const pays = await sellerApi.getPayments(s.id);
+          map[s.id] = pays || [];
+        } catch {
+          map[s.id] = [];
+        }
+      }
+      if (!ignore) setTablePayments(map);
+    };
+    if (sellers && sellers.length > 0) loadAllPayments();
+    // Refresh on window focus and on payments:updated broadcast
+    const onFocus = () => { if (!ignore && sellers && sellers.length > 0) loadAllPayments(); };
+    const onPaymentsUpdated = () => { if (!ignore && sellers && sellers.length > 0) loadAllPayments(); };
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('payments:updated', onPaymentsUpdated as EventListener);
+    // Periodic refresh
+    const timer = window.setInterval(() => { if (!ignore && sellers && sellers.length > 0) loadAllPayments(); }, 15000);
+    return () => { ignore = true; window.removeEventListener('focus', onFocus); window.removeEventListener('payments:updated', onPaymentsUpdated as EventListener); window.clearInterval(timer); };
   }, [sellers]);
 
   // Load sold-to transactions for all sellers shown in Search Results
@@ -405,6 +619,16 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
 
     setLoading(true);
     try {
+      // Basic validation: require positive numbers when adding
+      const amtVal = Number(addDataSeller.amount);
+      const kgVal = Number(addDataSeller.kg);
+      if (!isCreatingNew) {
+        if (!(kgVal > 0) || !(amtVal > 0)) {
+          toast.error("Enter weight and amount greater than 0");
+          setLoading(false);
+          return;
+        }
+      }
       if (isCreatingNew) {
         // Creating a new seller
         await sellerApi.create({
@@ -442,6 +666,7 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
           previous_kg: Number(originalSeller.kg),
           new_total_amount: newAmount,
           new_total_kg: newKg,
+          flower_name: (flowerChoice === 'Others' ? flowerOther.trim() : flowerChoice) || undefined,
         });
 
         toast.success(`Data added successfully! New Total: ₹${newAmount.toFixed(2)} | ${newKg.toFixed(2)} kg`);
@@ -471,6 +696,21 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
     try {
       const data = await sellerApi.getTransactions(sellerId);
       setTransactions(data);
+      // Merge server-assigned salesman names into badges so they persist after reload
+      try {
+        const fromServer: Record<string, string> = {};
+        for (const t of data || []) {
+          const name = String((t as any).salesman_name || '').trim();
+          if (name) fromServer[(t as any).id] = name;
+        }
+        if (Object.keys(fromServer).length > 0) {
+          setSoldBadges((prev) => {
+            const next = { ...prev, ...fromServer };
+            writeSoldBadges(next);
+            return next;
+          });
+        }
+      } catch {}
     } catch (error: any) {
       toast.error("Failed to load transaction history");
       setTransactions([]);
@@ -484,9 +724,15 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
     try {
       const data = await sellerApi.getSoldToTransactions(sellerId);
       setSoldToTransactionsForView(data);
+      // Also fetch latest sale_to contacts (sales names)
+      try {
+        const contacts = await sellerApi.getSaleToContacts(sellerId);
+        setSaleToForView(contacts || []);
+      } catch {}
     } catch (error: any) {
       toast.error("Failed to load sales history");
       setSoldToTransactionsForView([]);
+      setSaleToForView([]);
     } finally {
       setLoadingSoldToView(false);
     }
@@ -645,33 +891,32 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
 
   return (
     <>
-      <Card className="surface-card">
+      <Card className="surface-card shadow-md">
         <CardHeader>
           <div className="flex items-center justify-between gap-3">
-            <CardTitle>Search Results</CardTitle>
+            <div>
+              <h3 className="text-2xl md:text-3xl font-bold tracking-tight">Sellers Data</h3>
+              <p className="text-sm text-muted-foreground mt-1">Manage and review seller records and purchase updates</p>
+            </div>
             <div className="flex items-center gap-2">
               <Button
                 variant="gradient"
                 className="rounded-full shadow-md px-4 py-2 gap-2"
                 onClick={() => {
-                if (!sellers || sellers.length === 0) {
-                  toast.error("Search a seller first");
-                  return;
-                }
-                const base = sellers[0];
-                setIsCreatingNew(true);
-                setOriginalSeller(null);
-                setAddDataSeller({
-                  id: '',
-                  name: base.name,
-                  mobile: base.mobile,
-                  serial_number: '',
-                  address: base.address,
-                  amount: 0,
-                  kg: 0,
-                  date: new Date().toISOString().slice(0, 10),
-                });
-              }}
+                  if (!sellers || sellers.length === 0) {
+                    toast.error("Search a seller first");
+                    return;
+                  }
+                  const target = sellers[0];
+                  setIsCreatingNew(false);
+                  setOriginalSeller(target);
+                  setAddDataSeller({
+                    ...target,
+                    amount: '' as any,
+                    kg: '' as any,
+                    date: new Date().toISOString().slice(0, 10),
+                  });
+                }}
               >
                 <Plus className="w-4 h-4" />
                 Add New Data
@@ -681,22 +926,20 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
-            <Table>
+            <Table className="text-base">
               <TableHeader>
-                <TableRow>
+                <TableRow className="bg-muted/40">
                   <TableHead>Serial No.</TableHead>
                   <TableHead>Name</TableHead>
                   <TableHead>Mobile</TableHead>
                   <TableHead>Address</TableHead>
                   <TableHead>Date</TableHead>
-                  <TableHead className="text-right">Weight (kg)</TableHead>
-                  <TableHead className="text-right">Amount (₹)</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {sellers.map((seller) => (
-                  <>
+                  <React.Fragment key={seller.id}>
                     <TableRow 
                       key={seller.id}
                       className="hover:bg-accent/50 transition-colors cursor-pointer"
@@ -709,65 +952,31 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                       </TableCell>
                       <TableCell>{seller.name}</TableCell>
                       <TableCell>{seller.mobile}</TableCell>
-                      <TableCell className="max-w-xs truncate">{seller.address}</TableCell>
-                      <TableCell>{new Date(seller.date).toLocaleDateString()}</TableCell>
-                      <TableCell className="text-right">{Number(seller.kg).toFixed(2)}</TableCell>
-                      <TableCell className="text-right">₹{Number(seller.amount).toFixed(2)}</TableCell>
+                      <TableCell className="max-w-xs truncate" title={seller.address || ''}>{seller.address}</TableCell>
+                      <TableCell>
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-muted text-sm">
+                          {new Date(seller.date).toLocaleDateString()}
+                        </span>
+                      </TableCell>
                       <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex justify-end gap-2">
+                        <div className="flex justify-end gap-1">
                           <Button
-                            variant="outline"
+                            variant="ghost"
                             size="sm"
                             onClick={() => setEditingSeller(seller)}
-                            className="gap-1"
+                            aria-label="Edit"
+                            className="h-10 w-10"
                           >
-                            <Edit className="w-3 h-3" />
-                            Edit
+                            <Edit className="w-5 h-5" />
                           </Button>
                           <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                              setOriginalSeller(seller);
-                              setAddDataSeller({
-                                ...seller,
-                                amount: '' as any,
-                                kg: '' as any,
-                                date: new Date().toISOString().slice(0, 10),
-                              });
-                            }}
-                            className="gap-1 text-blue-600 hover:text-blue-700 border-blue-200"
-                          >
-                            <Plus className="w-3 h-3" />
-                            Add Data
-                          </Button>
-                          <Button
-                            variant="outline"
+                            variant="ghost"
                             size="sm"
                             onClick={() => handleDownloadSellerPdfForSeller(seller)}
-                            className="gap-1"
+                            aria-label="Download PDF"
+                            className="h-10 w-10"
                           >
-                            {/* simple download indicator */}
-                            <span className="w-3 h-3">⬇️</span>
-                            Download
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            // Removed "Sold To" button per request
-                            onClick={() => {}}
-                            className="hidden"
-                          >
-                            {/* Sold To removed */}
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setDeletingSeller(seller)}
-                            className="gap-1 text-red-600 hover:text-red-700 border-red-200"
-                          >
-                            <Trash2 className="w-3 h-3" />
-                            Delete
+                            <Download className="w-5 h-5" />
                           </Button>
                         </div>
                       </TableCell>
@@ -775,66 +984,234 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                     {/* Child rows for each purchase update (newest first) */}
                     {(tableTransactions[seller.id] || []).length > 0 && (
                       <TableRow>
-                        <TableCell colSpan={8} className="bg-muted/40 text-xs text-muted-foreground">Updates</TableCell>
+                        <TableCell colSpan={6} className="bg-muted/50 text-sm tracking-wide text-muted-foreground">Updates (Purchases History)</TableCell>
                       </TableRow>
                     )}
                     {([...((tableTransactions[seller.id] || []))]
+                      .filter((t) => Number(t.kg_added) !== 0 || Number(t.amount_added) !== 0)
                       .sort((a, b) => new Date(b.transaction_date).getTime() - new Date(a.transaction_date).getTime())
                     ).map((txn, idx) => (
                       <TableRow key={txn.id} className={`${idx % 2 === 0 ? 'bg-accent/20' : 'bg-accent/40'} hover:bg-accent/50 cursor-pointer`} onClick={() => { setSelectedTxnSeller(seller); setSelectedTxn(txn); }}>
-                        <TableCell>
-                          <span className="inline-flex items-center justify-center w-6 h-6 text-xs font-semibold rounded-full bg-primary/10 text-primary">
-                            {idx + 1}
-                          </span>
+                        <TableCell colSpan={6} className="py-2">
+                          <div className="flex items-center justify-between gap-3 px-2">
+                            <div className="flex items-center gap-3">
+                              <span className="inline-flex items-center justify-center w-6 h-6 text-xs font-semibold rounded-full bg-primary/10 text-primary">
+                                {idx + 1}
+                              </span>
+                              <span className="text-sm text-muted-foreground">Update</span>
+                              <span className="text-sm font-medium">{new Date(txn.transaction_date).toLocaleDateString()}</span>
+                            </div>
+                            <div className="flex items-center gap-5">
+                              {soldBadges[(txn as any).id] ? (
+                                <div className="flex flex-col items-center gap-0.5">
+                                  <span className="text-xs text-muted-foreground">Status</span>
+                                  <span className="inline-flex items-center px-2 py-1 rounded-full text-sm bg-amber-100 text-amber-700 border border-amber-200">
+                                    Sold to {soldBadges[(txn as any).id]}
+                                  </span>
+                                </div>
+                              ) : null}
+                              {(txn as any).flower_name ? (
+                                <div className="flex flex-col items-center gap-0.5">
+                                  <span className="text-xs text-muted-foreground">Flower</span>
+                                  <span className="inline-flex items-center px-2 py-1 rounded-full text-sm bg-violet-100 text-violet-700 border border-violet-200">
+                                    {(txn as any).flower_name}
+                                  </span>
+                                </div>
+                              ) : null}
+                              <div className="flex flex-col items-center gap-0.5">
+                                <span className="text-xs text-muted-foreground">Weight</span>
+                                <span className="inline-flex items-center px-2 py-1 rounded-full text-sm bg-blue-100 text-blue-700 border border-blue-200">+{Number(txn.kg_added).toFixed(2)} kg</span>
+                              </div>
+                              <div className="flex flex-col items-center gap-0.5">
+                                <span className="text-xs text-muted-foreground">Amount</span>
+                                <span className="inline-flex items-center px-2 py-1 rounded-full text-sm bg-emerald-100 text-emerald-700 border border-emerald-200">+₹{Number(txn.amount_added).toFixed(2)}</span>
+                              </div>
+                              <div className="inline-flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  className="text-sm h-8"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const d = new Date((txn as any).transaction_date);
+                                    const yyyy = d.getFullYear();
+                                    const mm = String(d.getMonth() + 1).padStart(2, '0');
+                                    const dd = String(d.getDate()).padStart(2, '0');
+                                    const norm = `${yyyy}-${mm}-${dd}`;
+                                    setEditingTxnSeller(seller);
+                                    setEditingTxn({ ...(txn as any), transaction_date: norm } as any);
+                                    try { toast.message?.('Opening edit…'); } catch {}
+                                  }}
+                                >
+                                  Edit
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  className="text-sm h-8 text-red-600 border-red-200 hover:text-red-700"
+                                  onClick={(e) => { e.stopPropagation(); setDeletingTxnSeller(seller); setDeletingTxn(txn); try { toast.message?.('Confirm delete…'); } catch {} }}
+                                >
+                                  Delete
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  className="text-sm h-8"
+                                  onClick={(e) => { e.stopPropagation(); setSelectedTxnSeller(seller); setSelectedTxn(txn); try { toast.message?.('Opening view…'); } catch {} }}
+                                >
+                                  View
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  className="text-sm h-8"
+                                  onClick={(e) => { e.stopPropagation(); setSalesSeller(seller); setSalesTxn(txn); setSalesPromptData({ name: '', number: '', address: '', weight: Number((txn as any).kg_added || 0), amount: Number((txn as any).amount_added || 0), full: true }); setSalesPromptOpen(true); }}
+                                  disabled={!!soldBadges[(txn as any).id]}
+                                >
+                                  Sales
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
                         </TableCell>
-                        <TableCell className="text-muted-foreground text-xs">Update</TableCell>
-                        <TableCell className="text-xs text-muted-foreground">—</TableCell>
-                        <TableCell className="max-w-xs truncate text-xs text-muted-foreground">—</TableCell>
-                        <TableCell className="text-xs">{new Date(txn.transaction_date).toLocaleDateString()}</TableCell>
-                        <TableCell className="text-right text-xs text-blue-600">+{Number(txn.kg_added).toFixed(2)} kg</TableCell>
-                        <TableCell className="text-right text-xs text-green-600">+₹{Number(txn.amount_added).toFixed(2)}</TableCell>
-            <TableCell className="text-right">
-              <div className="inline-flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="text-xs h-7 gap-1 text-green-600 hover:text-green-700 border-green-200"
-                  onClick={async (e) => {
-                    e.stopPropagation();
-                    setSoldToSeller(seller);
-                    setSoldToData({
-                      customer_name: '',
-                      customer_mobile: '',
-                      sale_date: new Date().toISOString().slice(0, 10),
-                      kg_sold: '' as any,
-                      amount_sold: '' as any,
-                      notes: '',
-                    });
-                    setLoadingSoldTo(true);
-                    try {
-                      const data = await sellerApi.getSoldToTransactions(seller.id);
-                      setSoldToTransactions(data);
-                    } catch (error) {
-                      console.error('Failed to fetch sold-to transactions:', error);
-                    } finally {
-                      setLoadingSoldTo(false);
-                    }
-                  }}
-                >
-                  Sold To
-                </Button>
-                <Button variant="outline" size="sm" className="text-xs h-7" onClick={(e) => { e.stopPropagation(); setSelectedTxnSeller(seller); setSelectedTxn(txn); }}>View</Button>
-              </div>
-            </TableCell>
                       </TableRow>
                     ))}
-                  </>
+                  </React.Fragment>
                 ))}
               </TableBody>
             </Table>
           </div>
         </CardContent>
       </Card>
+      {/* Sales Prompt Dialog (from Updates row "Sales" button) */}
+      <Dialog open={salesPromptOpen} onOpenChange={setSalesPromptOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Sales Details</DialogTitle>
+          </DialogHeader>
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (salesSaving) return;
+              if (!salesPromptData.name.trim()) { toast.error('Name is required'); return; }
+              if (!salesSeller || !salesTxn) { toast.error('No update selected'); return; }
+              const kgVal = parseFloat(String((salesPromptData as any).weight || '0')) || 0;
+              const amtVal = parseFloat(String((salesPromptData as any).amount || '0')) || 0;
+              if (!(kgVal > 0) || !(amtVal > 0)) {
+                toast.error('Enter sell weight and amount greater than 0');
+                return;
+              }
+              try {
+                setSalesSaving(true);
+                // Save to sale_to contacts table
+                await sellerApi.addSaleToContact(salesSeller.id, {
+                  name: salesPromptData.name.trim(),
+                  mobile: (salesPromptData.number || '').trim() || undefined,
+                  address: (salesPromptData.address || '').trim() || undefined,
+                });
+                // Create a Sold-To transaction to block the specified kg/amount
+                await sellerApi.addSoldToTransaction(salesSeller.id, {
+                  customer_name: salesPromptData.name.trim(),
+                  customer_mobile: (salesPromptData.number || '').trim() || undefined,
+                  sale_date: new Date().toISOString().slice(0, 10),
+                  kg_sold: kgVal,
+                  amount_sold: amtVal,
+                  notes: (salesPromptData.address || '').trim() ? `Address: ${salesPromptData.address?.trim()}` : undefined,
+                });
+                toast.success('Sale recorded and stock blocked');
+                // Mark this update row with a Sold to badge (and persist)
+                try {
+                  const txnId = (salesTxn as any)?.id as string;
+                  if (txnId) {
+                    setSoldBadges((prev) => {
+                      const next = { ...prev, [txnId]: salesPromptData.name.trim() };
+                      writeSoldBadges(next);
+                      return next;
+                    });
+                  }
+                } catch {}
+                setSalesPromptOpen(false);
+                // refresh sale_to and sold-to transactions for this seller
+                try { const contacts = await sellerApi.getSaleToContacts(salesSeller.id); setSaleToForView(contacts || []); } catch {}
+                try { const so = await sellerApi.getSoldToTransactions(salesSeller.id); setTableSoldTo((prev) => ({ ...prev, [salesSeller.id]: so })); } catch {}
+              } catch (err: any) {
+                toast.error(err?.message || 'Failed to save');
+              } finally {
+                setSalesSaving(false);
+              }
+            }}
+            className="space-y-3"
+          >
+            {salesTxn && (
+              <div className="space-y-1 rounded border p-2 bg-muted/30">
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={!!(salesPromptData as any).full}
+                    onChange={(e) => {
+                      const full = e.target.checked;
+                      if (full) {
+                        setSalesPromptData({ ...salesPromptData, full: true, weight: Number((salesTxn as any).kg_added || 0), amount: Number((salesTxn as any).amount_added || 0) });
+                      } else {
+                        setSalesPromptData({ ...salesPromptData, full: false });
+                      }
+                    }}
+                  />
+                  <span>Sell entire update ({Number((salesTxn as any).kg_added || 0).toFixed(2)} kg · ₹{Number((salesTxn as any).amount_added || 0).toFixed(2)})</span>
+                </label>
+              </div>
+            )}
+            <div className="space-y-2">
+              <Label>Name<span className="text-red-500">*</span></Label>
+              <Input value={salesPromptData.name} onChange={(e) => setSalesPromptData({ ...salesPromptData, name: e.target.value })} required />
+            </div>
+            <div className="space-y-2">
+              <Label>Number (optional)</Label>
+              <Input value={salesPromptData.number || ''} onChange={(e) => setSalesPromptData({ ...salesPromptData, number: e.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label>Address (optional)</Label>
+              <Textarea value={salesPromptData.address || ''} onChange={(e) => setSalesPromptData({ ...salesPromptData, address: e.target.value })} rows={3} />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Sell Weight (kg)</Label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  value={(salesPromptData as any).weight ?? ''}
+                  onChange={(e) => setSalesPromptData({ ...salesPromptData, weight: parseFloat(e.target.value || '0') })}
+                  disabled={!!(salesPromptData as any).full}
+                  placeholder="e.g., 5"
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Sell Amount (₹)</Label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  value={(salesPromptData as any).amount ?? ''}
+                  onChange={(e) => setSalesPromptData({ ...salesPromptData, amount: parseFloat(e.target.value || '0') })}
+                  disabled={!!(salesPromptData as any).full}
+                  placeholder="e.g., 500"
+                  required
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button type="button" variant="outline" onClick={() => setSalesPromptOpen(false)} disabled={salesSaving}>Cancel</Button>
+              <Button type="submit" disabled={salesSaving}>{salesSaving ? 'Saving...' : 'Save'}</Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
       {/* Bottom-of-interface Period Totals (outside dialog) */}
       {(() => {
         // Global clear across all sellers in current Search Results
@@ -886,62 +1263,61 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
           { kg: 0, amt: 0 }
         );
 
+        // Sum payments across all sellers since clear (subtract from purchases total)
+        const paid = sellers.reduce(
+          (acc, s) => {
+            const pays = tablePayments[s.id] || [];
+            for (const p of pays) {
+              const ts = new Date((p as any).paid_at).getTime();
+              if (!clearedAt || ts > clearedAt) {
+                acc.kg += Number((p as any).cleared_kg || 0);
+                acc.amt += Number((p as any).amount || 0);
+              }
+            }
+            return acc;
+          },
+          { kg: 0, amt: 0 }
+        );
+
+        const netPurchases = {
+          kg: Math.max(0, recv.kg - paid.kg),
+          amt: Math.max(0, recv.amt - paid.amt),
+        };
+
         if (recv.kg === 0 && recv.amt === 0 && sales.kg === 0 && sales.amt === 0) {
           return null;
         }
         return (
           <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="border rounded-lg p-4">
+            <div className="border rounded-lg p-4 bg-card shadow-sm">
               <div className="flex items-center justify-between mb-2">
-                <p className="text-sm font-semibold">Receiver Total (Purchases)</p>
-                <div className="flex items-center gap-2">
-                  <label className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <input type="checkbox" checked={clearConfirm} onChange={(e) => setClearConfirm(e.target.checked)} />
-                    Clear period
-                  </label>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={!clearConfirm}
-                    onClick={() => { setGlobalClear(); setClearConfirm(false); }}
-                    className="h-7 text-xs"
-                  >
-                    Clear Now
-                  </Button>
+                <p className="text-base font-semibold">Purchases Total</p>
+                <div className="text-xs text-muted-foreground">
+                  {sellers && sellers.length > 0 ? (
+                    <span className="font-medium text-foreground">{sellers[0].serial_number}({sellers[0].name})</span>
+                  ) : null}
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-2 text-center">
-                <div className="bg-blue-50 dark:bg-blue-950 rounded p-3">
-                  <p className="text-xs text-muted-foreground mb-1">Weight</p>
-                  <p className="text-xl font-bold text-blue-600">{recv.kg.toFixed(2)} kg</p>
+                <div className="bg-blue-50 dark:bg-blue-950 rounded p-3 shadow-sm">
+                  <p className="text-sm text-muted-foreground mb-1">Weight</p>
+                  <p className="text-2xl font-bold text-blue-600">{netPurchases.kg.toFixed(2)} kg</p>
                 </div>
-                <div className="bg-blue-50 dark:bg-blue-950 rounded p-3">
-                  <p className="text-xs text-muted-foreground mb-1">Amount</p>
-                  <p className="text-xl font-bold text-blue-600">₹{recv.amt.toFixed(2)}</p>
+                <div className="bg-blue-50 dark:bg-blue-950 rounded p-3 shadow-sm">
+                  <p className="text-sm text-muted-foreground mb-1">Amount</p>
+                  <p className="text-2xl font-bold text-blue-600">₹{netPurchases.amt.toFixed(2)}</p>
                 </div>
               </div>
-              {clearedAt ? (
-                <p className="mt-2 text-[11px] text-muted-foreground">Since {new Date(clearedAt).toLocaleDateString()}</p>
+              <p className="mt-2 text-[11px] text-muted-foreground">Paid since clear: -{paid.kg.toFixed(2)} kg · -₹{paid.amt.toFixed(2)}</p>
+              {viewingSeller ? (
+                <div className="mt-3 text-sm text-muted-foreground">
+                  <span className="font-medium">Serial:</span> {viewingSeller.serial_number} · <span className="font-medium">Seller:</span> {viewingSeller.name}
+                </div>
               ) : null}
+              {/* Removed Clear period/Now UI as requested */}
             </div>
 
-            <div className="border rounded-lg p-4">
-              <p className="text-sm font-semibold mb-2">Sales Total</p>
-              <div className="grid grid-cols-2 gap-2 text-center">
-                <div className="bg-amber-50 dark:bg-amber-950 rounded p-3">
-                  <p className="text-xs text-muted-foreground mb-1">Weight</p>
-                  <p className="text-xl font-bold text-amber-600">{sales.kg.toFixed(2)} kg</p>
-                </div>
-                <div className="bg-amber-50 dark:bg-amber-950 rounded p-3">
-                  <p className="text-xs text-muted-foreground mb-1">Amount</p>
-                  <p className="text-xl font-bold text-amber-600">₹{sales.amt.toFixed(2)}</p>
-                </div>
-              </div>
-              {clearedAt ? (
-                <p className="mt-2 text-[11px] text-muted-foreground">Since {new Date(clearedAt).toLocaleDateString()}</p>
-              ) : null}
-            </div>
+            {/* Sales Total panel removed as requested */}
           </div>
         );
       })()}
@@ -979,32 +1355,11 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                     required
                   />
                 </div>
-                <div className="space-y-2">
-                  <Label>Weight (kg)</Label>
-                  <Input
-                    type="number"
-                    step="0.01"
-                    value={editingSeller.kg}
-                    onChange={(e) => setEditingSeller({ ...editingSeller, kg: parseFloat(e.target.value) })}
-                    required
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Amount (₹)</Label>
-                  <Input
-                    type="number"
-                    step="0.01"
-                    value={editingSeller.amount}
-                    onChange={(e) => setEditingSeller({ ...editingSeller, amount: parseFloat(e.target.value) })}
-                    required
-                  />
-                </div>
                 <div className="space-y-2 md:col-span-2">
                   <Label>Address</Label>
                   <Textarea
                     value={editingSeller.address}
                     onChange={(e) => setEditingSeller({ ...editingSeller, address: e.target.value })}
-                    required
                     rows={3}
                   />
                 </div>
@@ -1046,7 +1401,133 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                   <span>Previous: {Number(selectedTxn.previous_kg).toFixed(2)} kg, ₹{Number(selectedTxn.previous_amount).toFixed(2)}</span>
                   <span className="font-semibold text-foreground">Total: {Number(selectedTxn.new_total_kg).toFixed(2)} kg, ₹{Number(selectedTxn.new_total_amount).toFixed(2)}</span>
                 </div>
+                {(selectedTxn as any).flower_name ? (
+                  <div className="mt-1 text-xs">
+                    <span className="font-semibold text-foreground">Flower:</span> <span className="font-semibold text-foreground">{ (selectedTxn as any).flower_name }</span>
+                  </div>
+                ) : null}
               </div>
+
+              {/* Sale (Sold To) for this purchase date only */}
+              <div className="border rounded p-3">
+                <h4 className="text-sm font-semibold mb-2">Sale (Sold To) for this date</h4>
+                {(() => {
+                  const sid = (selectedTxnSeller as any)?.id;
+                  // Prefer the most up-to-date list fetched for the viewing seller
+                  const all = (sid && viewingSeller && viewingSeller.id === sid
+                    ? (viewingSoldTo || [])
+                    : (tableSoldTo[sid] || [])
+                  ).slice();
+                  const toYMD = (v: any) => {
+                    const s = String(v || '').trim();
+                    if (!s) return '';
+                    // ISO YYYY-MM-DD
+                    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+                    // DMY DD/MM/YYYY
+                    const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+                    if (m) { const [_, dd, mm, yyyy] = m; return `${yyyy}-${mm}-${dd}`; }
+                    const d = new Date(s);
+                    return isNaN(d.getTime()) ? s : d.toISOString().slice(0, 10);
+                  };
+                  const purchaseDateKey = toYMD((selectedTxn as any).transaction_date || (selectedTxn as any).created_at);
+                  // Create local day window [start, end] for robust matching
+                  const [y, m, d] = purchaseDateKey.split('-').map(Number);
+                  const dayStart = y && m && d ? new Date(y, m - 1, d, 0, 0, 0, 0) : null;
+                  const dayEnd = y && m && d ? new Date(y, m - 1, d, 23, 59, 59, 999) : null;
+                  const parseToDate = (val: any) => {
+                    const key = toYMD(val);
+                    const [yy, mm, dd] = key.split('-').map(Number);
+                    return yy && mm && dd ? new Date(yy, mm - 1, dd, 12, 0, 0, 0) : new Date(NaN);
+                  };
+                  const daySales = all
+                    .filter((s: any) => {
+                      if (!dayStart || !dayEnd) return false;
+                      const sd = parseToDate((s as any).sale_date || (s as any).created_at);
+                      return sd >= dayStart && sd <= dayEnd;
+                    })
+                    .sort((a: any, b: any) => new Date(b.created_at || b.sale_date).getTime() - new Date(a.created_at || a.sale_date).getTime());
+
+                  // Prefer assigned person from badge or txn.salesman_name
+                  const txnId = (selectedTxn as any)?.id as string;
+                  const assignedNameRaw = (txnId ? String((soldBadges as any)[txnId] || '').trim() : '')
+                    || String((selectedTxn as any).salesman_name || '').trim();
+                  const assignedName = assignedNameRaw.toLowerCase();
+
+                  if (assignedName) {
+                    const matchByName = daySales.find((s: any) => String((s as any).customer_name || '').trim().toLowerCase() === assignedName);
+                    if (matchByName) {
+                      const sale = matchByName;
+                      return (
+                        <div className="space-y-2">
+                          <div className="border rounded p-2 bg-muted/30">
+                            <div className="flex justify-between items-start">
+                              <div>
+                                <p className="text-xs font-medium">{sale.customer_name}</p>
+                                <p className="text-[11px] text-muted-foreground">{new Date(sale.sale_date).toLocaleDateString()}</p>
+                              </div>
+                              <div className="text-right text-xs">
+                                <p className="font-semibold text-emerald-600">{Number(sale.kg_sold).toFixed(2)} kg</p>
+                                <p className="font-semibold text-emerald-600">₹{Number(sale.amount_sold).toFixed(2)}</p>
+                              </div>
+                            </div>
+                            <div className="mt-1 flex justify-between text-[11px] text-muted-foreground">
+                              <span>Had: {Number(sale.previous_kg).toFixed(2)} kg, ₹{Number(sale.previous_amount).toFixed(2)}</span>
+                              <span className="text-foreground">Remaining: {Number(sale.remaining_kg).toFixed(2)} kg, ₹{Number(sale.remaining_amount).toFixed(2)}</span>
+                            </div>
+                            {sale.notes && <p className="mt-1 text-[11px] italic text-muted-foreground">Note: {sale.notes}</p>}
+                          </div>
+                        </div>
+                      );
+                    }
+                    // Nothing recorded for that person on this date: still show assigned name
+                    const dateLabel = new Date(purchaseDateKey).toLocaleDateString();
+                    return (
+                      <div className="space-y-2">
+                        <div className="border rounded p-2 bg-muted/30">
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <p className="text-xs font-medium">{assignedNameRaw}</p>
+                              <p className="text-[11px] text-muted-foreground">{dateLabel}</p>
+                            </div>
+                            <div className="text-right text-xs">
+                              <p className="text-muted-foreground">No recorded sale on this date</p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  if (daySales.length === 0) {
+                    return <p className="text-xs text-muted-foreground">No sales for this date</p>;
+                  }
+
+                  // Fallback: show latest sale on this date
+                  const sale = daySales[0];
+                  return (
+                    <div className="space-y-2">
+                      <div className="border rounded p-2 bg-muted/30">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <p className="text-xs font-medium">{sale.customer_name || 'Unknown customer'}</p>
+                            <p className="text-[11px] text-muted-foreground">{new Date(sale.sale_date).toLocaleDateString()}</p>
+                          </div>
+                          <div className="text-right text-xs">
+                            <p className="font-semibold text-emerald-600">{Number(sale.kg_sold).toFixed(2)} kg</p>
+                            <p className="font-semibold text-emerald-600">₹{Number(sale.amount_sold).toFixed(2)}</p>
+                          </div>
+                        </div>
+                        <div className="mt-1 flex justify-between text-[11px] text-muted-foreground">
+                          <span>Had: {Number(sale.previous_kg).toFixed(2)} kg, ₹{Number(sale.previous_amount).toFixed(2)}</span>
+                          <span className="text-foreground">Remaining: {Number(sale.remaining_kg).toFixed(2)} kg, ₹{Number(sale.remaining_amount).toFixed(2)}</span>
+                        </div>
+                        {sale.notes && <p className="mt-1 text-[11px] italic text-muted-foreground">Note: {sale.notes}</p>}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+
               <div className="flex justify-end">
                 <Button variant="outline" onClick={() => { setSelectedTxn(null); setSelectedTxnSeller(null); }}>Close</Button>
               </div>
@@ -1054,6 +1535,157 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Edit purchase transaction dialog */}
+      <Dialog open={!!editingTxn} onOpenChange={() => { setEditingTxn(null); setEditingTxnSeller(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit Update - {editingTxnSeller?.name}</DialogTitle>
+          </DialogHeader>
+          {editingTxn && (
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                try {
+                  await sellerApi.updateTransaction(
+                    (editingTxnSeller as any).id,
+                    (editingTxn as any).id,
+                    {
+                      transaction_date: (editingTxn as any).transaction_date,
+                      amount_added: Number((editingTxn as any).amount_added),
+                      kg_added: Number((editingTxn as any).kg_added),
+                      flower_name: ((editingTxn as any).flower_name || '').trim() || undefined,
+                    }
+                  );
+                  const sid = (editingTxnSeller as any).id;
+                  const data = await sellerApi.getTransactions(sid);
+                  setTableTransactions((prev) => ({ ...prev, [sid]: data }));
+                  setEditingTxn(null);
+                  setEditingTxnSeller(null);
+                  onUpdate();
+                  toast.success('Update edited successfully');
+                } catch (err: any) {
+                  toast.error(err?.message || 'Failed to edit update');
+                }
+              }}
+              className="space-y-3"
+            >
+              <div className="space-y-1">
+                <Label>Date</Label>
+                <Input
+                  type="date"
+                  value={(editingTxn as any).transaction_date}
+                  onChange={(e) => setEditingTxn({ ...(editingTxn as any), transaction_date: e.target.value } as any)}
+                  required
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>Flower</Label>
+                {(() => {
+                  const known = new Set(['Rose','Sent yellow','Sent white','Chocolate','Ishwarya']);
+                  const current = String(((editingTxn as any).flower_name || '')).trim();
+                  const selectValue = known.has(current) ? current : 'Others';
+                  const showOther = !known.has(current) && selectValue === 'Others';
+                  return (
+                    <>
+                      <select
+                        className="w-full h-10 rounded-md border px-3 bg-background"
+                        value={selectValue}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          if (v === 'Others') {
+                            // keep current as-is (may be empty or custom); user can type below
+                            setEditingTxn({ ...(editingTxn as any), flower_name: current } as any);
+                          } else {
+                            setEditingTxn({ ...(editingTxn as any), flower_name: v } as any);
+                          }
+                        }}
+                        aria-label="Flower"
+                        title="Flower"
+                      >
+                        <option value="Rose">Rose</option>
+                        <option value="Sent yellow">Sent yellow</option>
+                        <option value="Sent white">Sent white</option>
+                        <option value="Chocolate">Chocolate</option>
+                        <option value="Ishwarya">Ishwarya</option>
+                        <option value="Others">Others</option>
+                      </select>
+                      {selectValue === 'Others' && (
+                        <div className="mt-2">
+                          <Input
+                            placeholder="Type flower name"
+                            value={current}
+                            onChange={(e) => setEditingTxn({ ...(editingTxn as any), flower_name: e.target.value } as any)}
+                          />
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label>Weight (kg)</Label>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    value={Number((editingTxn as any).kg_added)}
+                    onChange={(e) => setEditingTxn({ ...(editingTxn as any), kg_added: parseFloat(e.target.value || '0') } as any)}
+                    required
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Amount (₹)</Label>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    value={Number((editingTxn as any).amount_added)}
+                    onChange={(e) => setEditingTxn({ ...(editingTxn as any), amount_added: parseFloat(e.target.value || '0') } as any)}
+                    required
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="outline" onClick={() => { setEditingTxn(null); setEditingTxnSeller(null); }}>Cancel</Button>
+                <Button type="submit">Save</Button>
+              </div>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete purchase transaction confirm */}
+      <AlertDialog open={!!deletingTxn} onOpenChange={() => { setDeletingTxn(null); setDeletingTxnSeller(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this update?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will remove the selected update and restore totals accordingly.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => { setDeletingTxn(null); setDeletingTxnSeller(null); }}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={async () => {
+                try {
+                  await sellerApi.deleteTransaction((deletingTxnSeller as any).id, (deletingTxn as any).id);
+                  const sid = (deletingTxnSeller as any).id;
+                  const data = await sellerApi.getTransactions(sid);
+                  setTableTransactions((prev) => ({ ...prev, [sid]: data }));
+                  setDeletingTxn(null);
+                  setDeletingTxnSeller(null);
+                  onUpdate();
+                  toast.success('Update deleted successfully');
+                } catch (err: any) {
+                  toast.error(err?.message || 'Failed to delete update');
+                }
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* History-only dialog: shows only Purchase and Sales history for a seller */}
       <Dialog open={!!historySeller} onOpenChange={() => { setHistorySeller(null); setHistoryTxns([]); setHistorySoldTo([]); }}>
@@ -1143,103 +1775,143 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
       </Dialog>
 
       {/* Add Data: only Amount and Weight, others blocked */}
-      <Dialog open={!!addDataSeller} onOpenChange={() => { setAddDataSeller(null); setOriginalSeller(null); setIsCreatingNew(false); }}>
+      <Dialog open={!!addDataSeller} onOpenChange={() => { setAddDataSeller(null); setOriginalSeller(null); setIsCreatingNew(false); setAddMode('receive'); setSoldToSeller(null); }}>
         <DialogContent className="max-w-xl">
           <DialogHeader>
             <DialogTitle>{isCreatingNew ? "Add New Seller" : "Add Data to Seller"}</DialogTitle>
           </DialogHeader>
           {addDataSeller && (
-            <form onSubmit={handleAddDataUpdate} className="space-y-4">
+            <form
+              onSubmit={(e) => { handleAddDataUpdate(e); }}
+              className="space-y-4"
+            >
+              {/* Sold To option removed: only Receive mode is available */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {/* Read-only or editable based on mode */}
-                <div className="space-y-2">
-                  <Label>Seller Name {isCreatingNew && '*'}</Label>
-                  <Input 
-                    value={addDataSeller.name} 
-                    onChange={isCreatingNew ? (e) => setAddDataSeller({ ...addDataSeller, name: e.target.value }) : undefined}
-                    readOnly={!isCreatingNew} 
-                    disabled={!isCreatingNew}
-                    required={isCreatingNew}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Mobile {isCreatingNew && '*'}</Label>
-                  <Input 
-                    value={addDataSeller.mobile} 
-                    onChange={isCreatingNew ? (e) => setAddDataSeller({ ...addDataSeller, mobile: e.target.value }) : undefined}
-                    readOnly={!isCreatingNew} 
-                    disabled={!isCreatingNew}
-                    required={isCreatingNew}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Serial Number {isCreatingNew && '*'}</Label>
-                  <Input 
-                    value={addDataSeller.serial_number} 
-                    onChange={isCreatingNew ? (e) => setAddDataSeller({ ...addDataSeller, serial_number: e.target.value }) : undefined}
-                    readOnly={!isCreatingNew} 
-                    disabled={!isCreatingNew}
-                    required={isCreatingNew}
-                    placeholder={isCreatingNew ? "Enter unique serial number" : ""}
-                  />
-                </div>
-                <div className="space-y-2 md:col-span-2">
-                  <Label>Address {isCreatingNew && '*'}</Label>
-                  <Textarea 
-                    value={addDataSeller.address} 
-                    onChange={isCreatingNew ? (e) => setAddDataSeller({ ...addDataSeller, address: e.target.value }) : undefined}
-                    readOnly={!isCreatingNew} 
-                    disabled={!isCreatingNew}
-                    rows={3}
-                    required={isCreatingNew}
-                  />
-                </div>
-                {/* Editable fields at the end */}
-                <div className="space-y-2">
-                  <Label>Date *</Label>
-                  <Input
-                    type="date"
-                    value={addDataSeller.date}
-                    onChange={(e) => setAddDataSeller({ ...addDataSeller, date: e.target.value })}
-                    required
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>{isCreatingNew ? 'Weight (kg)' : 'Add Weight (kg)'} *</Label>
-                  <Input
-                    type="number"
-                    step="0.01"
-                    value={addDataSeller.kg === 0 ? '' : addDataSeller.kg}
-                    onChange={(e) => setAddDataSeller({ ...addDataSeller, kg: parseFloat(e.target.value) || 0 })}
-                    required
-                    placeholder={isCreatingNew ? "Enter weight" : "Enter weight to add"}
-                  />
-                  {!isCreatingNew && originalSeller && (
-                    <p className="text-xs text-muted-foreground">
-                      Current: {Number(originalSeller.kg).toFixed(2)} kg → New Total: {(Number(originalSeller.kg) + Number(addDataSeller.kg || 0)).toFixed(2)} kg
-                    </p>
-                  )}
-                </div>
-                <div className="space-y-2">
-                  <Label>{isCreatingNew ? 'Amount (₹)' : 'Add Amount (₹)'} *</Label>
-                  <Input
-                    type="number"
-                    step="0.01"
-                    value={addDataSeller.amount === 0 ? '' : addDataSeller.amount}
-                    onChange={(e) => setAddDataSeller({ ...addDataSeller, amount: parseFloat(e.target.value) || 0 })}
-                    required
-                    placeholder={isCreatingNew ? "Enter amount" : "Enter amount to add"}
-                  />
-                  {!isCreatingNew && originalSeller && (
-                    <p className="text-xs text-muted-foreground">
-                      Current: ₹{Number(originalSeller.amount).toFixed(2)} → New Total: ₹{(Number(originalSeller.amount) + Number(addDataSeller.amount || 0)).toFixed(2)}
-                    </p>
-                  )}
-                </div>
+                {/* Seller identity: inputs for new, compact summary for existing */}
+                {isCreatingNew ? (
+                  <>
+                    <div className="space-y-2">
+                      <Label>Seller Name *</Label>
+                      <Input
+                        value={addDataSeller.name}
+                        onChange={(e) => setAddDataSeller({ ...addDataSeller, name: e.target.value })}
+                        required
+                        placeholder="Enter seller name"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Mobile *</Label>
+                      <Input
+                        value={addDataSeller.mobile}
+                        onChange={(e) => setAddDataSeller({ ...addDataSeller, mobile: e.target.value })}
+                        required
+                        placeholder="Enter mobile number"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Serial Number *</Label>
+                      <Input
+                        value={addDataSeller.serial_number}
+                        onChange={(e) => setAddDataSeller({ ...addDataSeller, serial_number: e.target.value })}
+                        required
+                        placeholder="Enter unique serial number"
+                      />
+                    </div>
+                    <div className="space-y-2 md:col-span-2">
+                      <Label>Address *</Label>
+                      <Textarea
+                        value={addDataSeller.address}
+                        onChange={(e) => setAddDataSeller({ ...addDataSeller, address: e.target.value })}
+                        rows={3}
+                        required
+                        placeholder="Street, City, PIN"
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <div className="md:col-span-2 rounded-lg border bg-muted/40 p-3 text-sm">
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                      <div><span className="text-muted-foreground">Seller:</span> <span className="font-medium">{addDataSeller.name}</span></div>
+                      <div><span className="text-muted-foreground">Serial:</span> <span className="font-medium">{addDataSeller.serial_number}</span></div>
+                      <div><span className="text-muted-foreground">Mobile:</span> <span className="font-medium">{addDataSeller.mobile}</span></div>
+                    </div>
+                    {addDataSeller.address ? (
+                      <p className="mt-1 text-xs text-muted-foreground truncate">{addDataSeller.address}</p>
+                    ) : null}
+                  </div>
+                )}
+                {/* Editable fields */}
+                {
+                  <>
+                    <div className="space-y-2">
+                      <Label>Date *</Label>
+                      <Input
+                        type="date"
+                        value={addDataSeller.date}
+                        onChange={(e) => setAddDataSeller({ ...addDataSeller, date: e.target.value })}
+                        required
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Weight (kg) *</Label>
+                      <Input
+                        type="number"
+                        step="0.01"
+                        min="0.01"
+                        value={addDataSeller.kg === 0 ? '' : addDataSeller.kg}
+                        onChange={(e) => setAddDataSeller({ ...addDataSeller, kg: parseFloat(e.target.value) || 0 })}
+                        required
+                        placeholder="Enter weight to add"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Amount (₹) *</Label>
+                      <Input
+                        type="number"
+                        step="0.01"
+                        min="0.01"
+                        value={addDataSeller.amount === 0 ? '' : addDataSeller.amount}
+                        onChange={(e) => setAddDataSeller({ ...addDataSeller, amount: parseFloat(e.target.value) || 0 })}
+                        required
+                        placeholder="Enter amount to add"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Flower</Label>
+                      <select
+                        className="w-full h-10 rounded-md border px-3 bg-background"
+                        value={flowerChoice}
+                        onChange={(e) => setFlowerChoice(e.target.value)}
+                        aria-label="Flower"
+                        title="Flower"
+                      >
+                        <option value="">Select flower</option>
+                        <option value="Rose">Rose</option>
+                        <option value="Sent yellow">Sent yellow</option>
+                        <option value="Sent white">Sent white</option>
+                        <option value="Chocolate">Chocolate</option>
+                        <option value="Ishwarya">Ishwarya</option>
+                        <option value="Others">Others</option>
+                      </select>
+                    </div>
+                    {flowerChoice === 'Others' && (
+                      <div className="space-y-2">
+                        <Label>Other flower</Label>
+                        <Input
+                          placeholder="Type flower name"
+                          value={flowerOther}
+                          onChange={(e) => setFlowerOther(e.target.value)}
+                        />
+                      </div>
+                    )}
+                  </>
+                }
+
+                {/* Sold To form removed from Add Data dialog */}
               </div>
               
               {/* Summary Card - Only show when adding data, not creating new */}
-              {!isCreatingNew && originalSeller && (
+              {(!isCreatingNew && originalSeller && addMode === 'receive') && (
                 <div className="bg-blue-50 dark:bg-blue-950 p-4 rounded-lg border border-blue-200 dark:border-blue-800">
                 <h4 className="font-semibold text-sm mb-2">Summary</h4>
                 <div className="grid grid-cols-2 gap-2 text-sm">
@@ -1253,19 +1925,19 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                   </div>
                   <div>
                     <span className="text-muted-foreground">Adding:</span>
-                    <span className="ml-2 font-medium text-blue-600">+{Number(addDataSeller.kg).toFixed(2)} kg</span>
+                    <span className="ml-2 font-medium text-blue-600">{addDataSeller.kg ? `+${Number(addDataSeller.kg).toFixed(2)} kg` : '—'}</span>
                   </div>
                   <div>
                     <span className="text-muted-foreground">Adding:</span>
-                    <span className="ml-2 font-medium text-blue-600">+₹{Number(addDataSeller.amount).toFixed(2)}</span>
+                    <span className="ml-2 font-medium text-blue-600">{addDataSeller.amount ? `+₹${Number(addDataSeller.amount).toFixed(2)}` : '—'}</span>
                   </div>
                   <div className="font-semibold text-green-600">
                     <span>New Total:</span>
-                    <span className="ml-2">{(Number(originalSeller.kg) + Number(addDataSeller.kg)).toFixed(2)} kg</span>
+                    <span className="ml-2">{addDataSeller.kg ? (Number(originalSeller.kg) + Number(addDataSeller.kg)).toFixed(2) + ' kg' : '—'}</span>
                   </div>
                   <div className="font-semibold text-green-600">
                     <span>New Total:</span>
-                    <span className="ml-2">₹{(Number(originalSeller.amount) + Number(addDataSeller.amount)).toFixed(2)}</span>
+                    <span className="ml-2">{addDataSeller.amount ? `₹${(Number(originalSeller.amount) + Number(addDataSeller.amount)).toFixed(2)}` : '—'}</span>
                   </div>
                 </div>
               </div>
@@ -1273,7 +1945,7 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
 
               <div className="flex gap-2">
                 <Button type="submit" disabled={loading}>
-                  {loading ? (isCreatingNew ? "Creating..." : "Adding...") : (isCreatingNew ? "Create Seller" : "Add Data")}
+                  {loading ? (isCreatingNew ? "Creating..." : (addMode === 'receive' ? "Adding..." : "Saving...")) : (isCreatingNew ? "Create Seller" : (addMode === 'receive' ? "Add Data" : "Save Sale"))}
                 </Button>
                 <Button type="button" variant="outline" onClick={() => { setAddDataSeller(null); setOriginalSeller(null); setIsCreatingNew(false); }}>
                   Cancel
@@ -1344,6 +2016,11 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                       (acc, t) => ({ kg: acc.kg + Number(t.kg_added || 0), amt: acc.amt + Number(t.amount_added || 0) }),
                       { kg: 0, amt: 0 }
                     );
+                  // Payments subtraction for this seller
+                  const pays = (tablePayments[viewingSeller.id] || [])
+                    .filter(p => !clearedAt || new Date((p as any).paid_at).getTime() > clearedAt)
+                    .reduce((acc, p) => ({ kg: acc.kg + Number((p as any).cleared_kg || 0), amt: acc.amt + Number((p as any).amount || 0) }), { kg: 0, amt: 0 });
+                  const net = { kg: Math.max(0, recv.kg - pays.kg), amt: Math.max(0, recv.amt - pays.amt) };
                   const sales = (viewingSoldTo || [])
                     .filter(s => !clearedAt || new Date((s as any).created_at || s.sale_date).getTime() > clearedAt)
                     .reduce(
@@ -1376,10 +2053,16 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                         </div>
                       </div>
                       <div className="grid grid-cols-2 gap-3">
-                        <div className="border rounded-lg p-4 text-center bg-blue-50 dark:bg-blue-950">
-                          <p className="text-xs text-muted-foreground mb-1">Receiver Total (Purchases)</p>
-                          <p className="text-sm font-semibold text-blue-700">{recv.kg.toFixed(2)} kg</p>
-                          <p className="text-lg font-bold text-blue-600">₹{recv.amt.toFixed(2)}</p>
+                        <div className="border rounded-lg p-4 text-center bg-blue-50 dark:bg-blue-950 shadow-sm">
+                          <p className="text-xs text-muted-foreground mb-1">Purchases Total</p>
+                          <p className="text-sm font-semibold text-blue-700">{net.kg.toFixed(2)} kg</p>
+                          <p className="text-lg font-bold text-blue-600">₹{net.amt.toFixed(2)}</p>
+                          <p className="mt-1 text-[11px] text-muted-foreground">Paid: -{pays.kg.toFixed(2)} kg · -₹{pays.amt.toFixed(2)}</p>
+                          {viewingSeller ? (
+                            <div className="mt-2 text-[11px] text-muted-foreground">
+                              <span className="font-medium">Serial:</span> {viewingSeller.serial_number} · <span className="font-medium">Seller:</span> {viewingSeller.name}
+                            </div>
+                          ) : null}
                         </div>
                         <div className="border rounded-lg p-4 text-center bg-amber-50 dark:bg-amber-950">
                           <p className="text-xs text-muted-foreground mb-1">Sales Total</p>
@@ -1411,6 +2094,9 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                               </p>
                             </div>
                             <div className="text-right">
+                              {(txn as any).flower_name ? (
+                                <p className="text-[11px] font-semibold text-foreground">Flower {(txn as any).flower_name}</p>
+                              ) : null}
                               <p className="text-xs font-semibold text-blue-600">+{Number(txn.kg_added).toFixed(2)} kg</p>
                               <p className="text-xs font-semibold text-green-600">+₹{Number(txn.amount_added).toFixed(2)}</p>
                             </div>
@@ -1419,6 +2105,11 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                             <span>Previous: {Number(txn.previous_kg).toFixed(2)} kg, ₹{Number(txn.previous_amount).toFixed(2)}</span>
                             <span className="font-semibold text-foreground">Total: {Number(txn.new_total_kg).toFixed(2)} kg, ₹{Number(txn.new_total_amount).toFixed(2)}</span>
                           </div>
+                          {(txn as any).flower_name ? (
+                            <div className="mt-1 text-xs">
+                              <span className="font-semibold text-foreground">Flower:</span> <span className="font-semibold text-foreground">{(txn as any).flower_name}</span>
+                            </div>
+                          ) : null}
                         </div>
                       ))}
                     </div>
@@ -1431,7 +2122,7 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                 <div className="flex justify-between items-center mb-3">
                   <div>
                     <h3 className="text-sm font-semibold">Sales History ({viewingSoldTo.length})</h3>
-                    <p className="text-xs text-muted-foreground">Sold to customers</p>
+                    <p className="text-xs text-muted-foreground">Sold to customers · Salesman: <span className="font-medium text-foreground">{viewingSeller.name}</span></p>
                   </div>
                   <Button
                     variant="outline"
@@ -1502,7 +2193,17 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                 {loadingSoldToView ? (
                   <p className="text-center text-muted-foreground py-4 text-sm">Loading...</p>
                 ) : viewingSoldTo.length === 0 ? (
-                  <p className="text-center text-muted-foreground py-4 text-sm">No sales yet</p>
+                  <div className="text-center text-muted-foreground py-4 text-sm">
+                    {(() => {
+                      // Prefer: latest sale_to contact > latest txn.salesman_name > seller name
+                      const latestContact = (saleToForView && saleToForView.length > 0) ? saleToForView[0].name : '';
+                      const latestTxnSalesman = (transactions && transactions.length > 0)
+                        ? (transactions[0] as any).salesman_name || ''
+                        : '';
+                      const assigned = latestContact || latestTxnSalesman || viewingSeller.name || '';
+                      return (<p className="font-medium text-foreground">{assigned}</p>);
+                    })()}
+                  </div>
                 ) : (
                   <div className="max-h-[500px] overflow-y-auto space-y-2">
                     {viewingSoldTo.map((sale, index) => (

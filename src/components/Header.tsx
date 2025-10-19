@@ -1,4 +1,4 @@
-import { User, LogOut, Users, Home } from "lucide-react";
+import { User, LogOut, Users, Home, CreditCard } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { authApi } from "@/lib/api";
 import { toast } from "sonner";
@@ -13,6 +13,7 @@ export function Header() {
     toast.success("Signed out successfully");
     window.location.reload();
   };
+
   
   return (
     <header className="w-full">
@@ -51,6 +52,15 @@ export function Header() {
               >
                 <Users className="h-4 w-4" />
                 All Sellers
+              </Button>
+              <Button 
+                variant="ghost" 
+                size="sm"
+                onClick={() => navigate('/payments')}
+                className={`text-white hover:bg-white/20 gap-2 ${location.pathname === '/payments' ? 'bg-white/20' : ''}`}
+              >
+                <CreditCard className="h-4 w-4" />
+                Payment
               </Button>
             </nav>
           </div>

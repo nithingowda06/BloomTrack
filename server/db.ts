@@ -4,8 +4,11 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-// Check if DATABASE_URL is configured
-if (!process.env.DATABASE_URL || process.env.DATABASE_URL.includes('your_neon_postgresql_connection_string_here')) {
+// Sanitize and validate DATABASE_URL
+const RAW_DATABASE_URL = process.env.DATABASE_URL;
+const DATABASE_URL = RAW_DATABASE_URL ? RAW_DATABASE_URL.replace(/^['"]|['"]$/g, '') : undefined;
+
+if (!DATABASE_URL || DATABASE_URL.includes('your_neon_postgresql_connection_string_here')) {
   console.error('\n❌ ERROR: DATABASE_URL is not configured in .env file');
   console.error('Please follow these steps:');
   console.error('1. Create a Neon PostgreSQL database at https://console.neon.tech/');
@@ -19,7 +22,7 @@ if (!process.env.DATABASE_URL || process.env.DATABASE_URL.includes('your_neon_po
 neonConfig.webSocketConstructor = ws as unknown as typeof WebSocket;
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: DATABASE_URL,
   // Fail fast if DB is unreachable
   connectionTimeoutMillis: 5000,
 });

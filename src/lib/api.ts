@@ -148,8 +148,58 @@ export const sellerApi = {
     previous_kg: number;
     new_total_amount: number;
     new_total_kg: number;
+    flower_name?: string;
   }) => {
     return fetchWithAuth(`/sellers/${id}/transactions`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  updateTransaction: async (id: string, txnId: string, data: {
+    transaction_date: string;
+    amount_added: number;
+    kg_added: number;
+    flower_name?: string;
+    salesman_name?: string;
+    salesman_mobile?: string;
+    salesman_address?: string;
+  }) => {
+    return fetchWithAuth(`/sellers/${id}/transactions/${txnId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  },
+
+  deleteTransaction: async (id: string, txnId: string) => {
+    return fetchWithAuth(`/sellers/${id}/transactions/${txnId}`, {
+      method: 'DELETE',
+    });
+  },
+
+  // Fallback: assign salesman to a transaction by txnId only
+  assignSalesmanByTxn: async (txnId: string, data: {
+    salesman_name: string;
+    salesman_mobile?: string;
+    salesman_address?: string;
+  }) => {
+    return fetchWithAuth(`/sellers/transactions/${txnId}/salesman`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  },
+
+  // sale_to contacts (sales names per seller)
+  getSaleToContacts: async (id: string) => {
+    return fetchWithAuth(`/sellers/${id}/sale-to`);
+  },
+
+  addSaleToContact: async (id: string, data: {
+    name: string;
+    mobile?: string;
+    address?: string;
+  }) => {
+    return fetchWithAuth(`/sellers/${id}/sale-to`, {
       method: 'POST',
       body: JSON.stringify(data),
     });
@@ -189,6 +239,32 @@ export const sellerApi = {
     return fetchWithAuth(`/sellers/${id}/sold-to/${saleId}`, {
       method: 'DELETE',
     });
+  },
+
+  // Payments API
+  getPayments: async (id: string) => {
+    return fetchWithAuth(`/sellers/${id}/payments`);
+  },
+
+  addPayment: async (id: string, data: {
+    from_date?: string;
+    to_date?: string;
+    amount: number;
+    cleared_kg: number;
+    notes?: string;
+  }) => {
+    return fetchWithAuth(`/sellers/${id}/payments`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+};
+
+// Reports API
+export const reportsApi = {
+  // date format: YYYY-MM-DD
+  eod: async (date: string) => {
+    return fetchWithAuth(`/reports/eod?date=${encodeURIComponent(date)}`);
   },
 };
 
