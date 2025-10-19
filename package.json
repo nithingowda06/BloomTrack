@@ -10,6 +10,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "server": "tsx server/index.ts",
+    "server:build": "tsc -p server/tsconfig.json",
+    "server:start": "node server/dist/index.js",
     "server:dev": "nodemon",
     "check-setup": "node check-setup.js",
     "generate-secret": "node generate-secret.js"
