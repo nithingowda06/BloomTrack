@@ -1816,11 +1816,10 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label>Mobile *</Label>
+                      <Label>Mobile (optional)</Label>
                       <Input
                         value={addDataSeller.mobile}
                         onChange={(e) => setAddDataSeller({ ...addDataSeller, mobile: e.target.value })}
-                        required
                         placeholder="Enter mobile number"
                       />
                     </div>
@@ -1834,12 +1833,11 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                       />
                     </div>
                     <div className="space-y-2 md:col-span-2">
-                      <Label>Address *</Label>
+                      <Label>Address (optional)</Label>
                       <Textarea
                         value={addDataSeller.address}
                         onChange={(e) => setAddDataSeller({ ...addDataSeller, address: e.target.value })}
                         rows={3}
-                        required
                         placeholder="Street, City, PIN"
                       />
                     </div>

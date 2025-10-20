@@ -3,6 +3,7 @@ import { sellerApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 
 interface AddSellerFormProps {
@@ -15,6 +16,7 @@ export const AddSellerForm = ({ onSuccess }: AddSellerFormProps) => {
     name: "",
     mobile: "",
     serial_number: "",
+    address: "",
   });
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -27,7 +29,7 @@ export const AddSellerForm = ({ onSuccess }: AddSellerFormProps) => {
         mobile: formData.mobile,
         serial_number: formData.serial_number,
         // Defaults for initial creation; details can be added later
-        address: "",
+        address: formData.address,
         date: new Date().toISOString().split('T')[0],
         amount: 0,
         kg: 0,
@@ -37,6 +39,7 @@ export const AddSellerForm = ({ onSuccess }: AddSellerFormProps) => {
         name: "",
         mobile: "",
         serial_number: "",
+        address: "",
       });
       
       onSuccess();
@@ -69,13 +72,21 @@ export const AddSellerForm = ({ onSuccess }: AddSellerFormProps) => {
           />
         </div>
         <div className="space-y-2">
-          <Label htmlFor="mobile">Mobile *</Label>
+          <Label htmlFor="mobile">Mobile (optional)</Label>
           <Input
             id="mobile"
             type="tel"
             value={formData.mobile}
             onChange={(e) => setFormData({ ...formData, mobile: e.target.value })}
-            required
+          />
+        </div>
+        <div className="space-y-2 md:col-span-2">
+          <Label htmlFor="address">Address (optional)</Label>
+          <Textarea
+            id="address"
+            value={formData.address}
+            onChange={(e) => setFormData({ ...formData, address: e.target.value })}
+            rows={3}
           />
         </div>
       </div>
