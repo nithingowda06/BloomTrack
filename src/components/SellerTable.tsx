@@ -1555,11 +1555,19 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                       amount_added: Number((editingTxn as any).amount_added),
                       kg_added: Number((editingTxn as any).kg_added),
                       flower_name: ((editingTxn as any).flower_name || '').trim() || undefined,
+                      salesman_name: ((editingTxn as any).salesman_name || '').trim() || undefined,
                     }
                   );
                   const sid = (editingTxnSeller as any).id;
                   const data = await sellerApi.getTransactions(sid);
                   setTableTransactions((prev) => ({ ...prev, [sid]: data }));
+                  // Update local sold badge cache so the "Sold to" name appears instantly
+                  try {
+                    const name = String(((editingTxn as any).salesman_name || '').trim());
+                    if (name) {
+                      setSoldBadges((prev) => { const next = { ...prev, [(editingTxn as any).id]: name }; writeSoldBadges(next); return next; });
+                    }
+                  } catch {}
                   setEditingTxn(null);
                   setEditingTxnSeller(null);
                   onUpdate();
@@ -1622,6 +1630,14 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                     </>
                   );
                 })()}
+              </div>
+              <div className="space-y-1">
+                <Label>Sold To (Name)</Label>
+                <Input
+                  placeholder="Enter buyer/customer name"
+                  value={String(((editingTxn as any).salesman_name || '')).trim()}
+                  onChange={(e) => setEditingTxn({ ...(editingTxn as any), salesman_name: e.target.value } as any)}
+                />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
