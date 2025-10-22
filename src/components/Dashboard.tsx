@@ -95,6 +95,32 @@ export const Dashboard = () => {
   const analyticsTotalAmount = analyticsData.reduce((sum, seller) => sum + Number(seller.amount), 0);
   const analyticsTotalKg = analyticsData.reduce((sum, seller) => sum + Number(seller.kg), 0);
 
+  const handleCopyTotals = async () => {
+    const text = `Total Sellers: ${analyticsData.length}\nTotal Amount: ₹${analyticsTotalAmount.toFixed(2)}\nTotal Weight: ${analyticsTotalKg.toFixed(2)} kg`;
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success('Totals copied to clipboard');
+    } catch (e) {
+      toast.error('Failed to copy totals');
+    }
+  };
+
+  const handleExportTotalsCsv = () => {
+    const headers = ['total_sellers','total_amount','total_kg'];
+    const row = [String(analyticsData.length), analyticsTotalAmount.toFixed(2), analyticsTotalKg.toFixed(2)];
+    const csv = headers.join(',') + "\n" + row.join(',') + "\n";
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'analytics_totals.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast.success('Totals CSV downloaded');
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-accent/10 to-background">
       <Header />
@@ -149,10 +175,33 @@ export const Dashboard = () => {
               </DialogTitle>
             </DialogHeader>
             <div className="space-y-6 mt-4">
+              {/* Summary Cards */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="surface-card p-4 rounded-md">
+                  <div className="text-sm text-muted-foreground mb-1">Total Sellers</div>
+                  <div className="text-2xl font-bold text-primary">{analyticsData.length}</div>
+                </div>
+                <div className="surface-card p-4 rounded-md">
+                  <div className="text-sm text-muted-foreground mb-1">Total Amount</div>
+                  <div className="text-2xl font-bold text-green-600">₹{analyticsTotalAmount.toFixed(2)}</div>
+                </div>
+                <div className="surface-card p-4 rounded-md">
+                  <div className="text-sm text-muted-foreground mb-1">Total Weight</div>
+                  <div className="text-2xl font-bold text-blue-600">{analyticsTotalKg.toFixed(2)} kg</div>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" className="rounded-md" onClick={handleCopyTotals}>Copy Totals</Button>
+                <Button variant="outline" className="rounded-md" onClick={handleExportTotalsCsv}>Export Totals (CSV)</Button>
+              </div>
+
               <AnalyticsTotalsRadial sellers={analyticsData} title="Totals (Amount vs Weight)" />
             </div>
           </DialogContent>
         </Dialog>
       </div>
+    </div>
   );
 };
