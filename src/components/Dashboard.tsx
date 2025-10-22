@@ -35,6 +35,12 @@ export const Dashboard = () => {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isAnalyticsOpen, setIsAnalyticsOpen] = useState(false);
   const [lastSearchQuery, setLastSearchQuery] = useState<string>("");
+  const [fromDate, setFromDate] = useState<string>("");
+  const [toDate, setToDate] = useState<string>("");
+  const [rangeAmount, setRangeAmount] = useState<number>(0);
+  const [rangeKg, setRangeKg] = useState<number>(0);
+  const [rangeLoading, setRangeLoading] = useState<boolean>(false);
+  const [rangeApplied, setRangeApplied] = useState<boolean>(false);
 
   useEffect(() => {
     fetchProfile();
@@ -95,8 +101,75 @@ export const Dashboard = () => {
   const analyticsTotalAmount = analyticsData.reduce((sum, seller) => sum + Number(seller.amount), 0);
   const analyticsTotalKg = analyticsData.reduce((sum, seller) => sum + Number(seller.kg), 0);
 
+  // Helpers
+  const toLocalYMD = (v: any) => {
+    const s = String(v || '').trim();
+    if (!s) return '';
+    if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
+      const d = new Date(s);
+      if (!isNaN(d.getTime())) {
+        const yy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        return `${yy}-${mm}-${dd}`;
+      }
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return '';
+    const yy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yy}-${mm}-${dd}`;
+  };
+
+  const isWithinRange = (dstr: string, from: string, to: string) => {
+    const ymd = toLocalYMD(dstr);
+    if (!ymd) return false;
+    if (from && ymd < from) return false;
+    if (to && ymd > to) return false;
+    return true;
+  };
+
+  const handleApplyRange = async () => {
+    const f = toLocalYMD(fromDate);
+    const t = toLocalYMD(toDate);
+    if (!f && !t) {
+      setRangeApplied(false);
+      setRangeAmount(0);
+      setRangeKg(0);
+      toast.info('Select From or To date');
+      return;
+    }
+    setRangeLoading(true);
+    try {
+      let amt = 0;
+      let kg = 0;
+      await Promise.all(analyticsData.map(async (s) => {
+        try {
+          const txns = await sellerApi.getTransactions(s.id);
+          txns.forEach((t: any) => {
+            const dsrc = t.transaction_date || t.created_at || '';
+            if (isWithinRange(String(dsrc), f, t)) {
+              kg += Number(t.kg_added || 0);
+              amt += Number(t.amount_added || 0);
+            }
+          });
+        } catch {}
+      }));
+      setRangeAmount(amt);
+      setRangeKg(kg);
+      setRangeApplied(true);
+      toast.success('Range applied');
+    } finally {
+      setRangeLoading(false);
+    }
+  };
+
   const handleCopyTotals = async () => {
-    const text = `Total Sellers: ${analyticsData.length}\nTotal Amount: ₹${analyticsTotalAmount.toFixed(2)}\nTotal Weight: ${analyticsTotalKg.toFixed(2)} kg`;
+    const amt = rangeApplied ? rangeAmount : analyticsTotalAmount;
+    const kg = rangeApplied ? rangeKg : analyticsTotalKg;
+    const text = `Total Sellers: ${analyticsData.length}\nTotal Amount: ₹${amt.toFixed(2)}\nTotal Weight: ${kg.toFixed(2)} kg${rangeApplied ? `\nRange: ${fromDate || '-'} to ${toDate || '-'}` : ''}`;
     try {
       await navigator.clipboard.writeText(text);
       toast.success('Totals copied to clipboard');
@@ -106,8 +179,10 @@ export const Dashboard = () => {
   };
 
   const handleExportTotalsCsv = () => {
-    const headers = ['total_sellers','total_amount','total_kg'];
-    const row = [String(analyticsData.length), analyticsTotalAmount.toFixed(2), analyticsTotalKg.toFixed(2)];
+    const amt = rangeApplied ? rangeAmount : analyticsTotalAmount;
+    const kg = rangeApplied ? rangeKg : analyticsTotalKg;
+    const headers = ['total_sellers','total_amount','total_kg','from','to'];
+    const row = [String(analyticsData.length), amt.toFixed(2), kg.toFixed(2), (fromDate||''), (toDate||'')];
     const csv = headers.join(',') + "\n" + row.join(',') + "\n";
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -175,6 +250,25 @@ export const Dashboard = () => {
               </DialogTitle>
             </DialogHeader>
             <div className="space-y-6 mt-4">
+              {/* Date Range Filter */}
+              <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-end">
+                <div className="flex-1">
+                  <label className="text-sm text-muted-foreground block mb-1">From</label>
+                  <input type="date" className="w-full px-3 py-2 border rounded-md bg-background" value={fromDate} onChange={(e)=>setFromDate(e.target.value)} />
+                </div>
+                <div className="flex-1">
+                  <label className="text-sm text-muted-foreground block mb-1">To</label>
+                  <input type="date" className="w-full px-3 py-2 border rounded-md bg-background" value={toDate} onChange={(e)=>setToDate(e.target.value)} />
+                </div>
+                <Button onClick={handleApplyRange} disabled={rangeLoading} className="rounded-md">
+                  {rangeLoading ? 'Calculating…' : 'Apply'}
+                </Button>
+                {rangeApplied && (
+                  <Button variant="ghost" onClick={()=>{ setFromDate(''); setToDate(''); setRangeApplied(false); }} className="rounded-md">
+                    Clear
+                  </Button>
+                )}
+              </div>
               {/* Summary Cards */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="surface-card p-4 rounded-md">
@@ -183,11 +277,11 @@ export const Dashboard = () => {
                 </div>
                 <div className="surface-card p-4 rounded-md">
                   <div className="text-sm text-muted-foreground mb-1">Total Amount</div>
-                  <div className="text-2xl font-bold text-green-600">₹{analyticsTotalAmount.toFixed(2)}</div>
+                  <div className="text-2xl font-bold text-green-600">₹{(rangeApplied ? rangeAmount : analyticsTotalAmount).toFixed(2)}</div>
                 </div>
                 <div className="surface-card p-4 rounded-md">
                   <div className="text-sm text-muted-foreground mb-1">Total Weight</div>
-                  <div className="text-2xl font-bold text-blue-600">{analyticsTotalKg.toFixed(2)} kg</div>
+                  <div className="text-2xl font-bold text-blue-600">{(rangeApplied ? rangeKg : analyticsTotalKg).toFixed(2)} kg</div>
                 </div>
               </div>
 
@@ -197,7 +291,10 @@ export const Dashboard = () => {
                 <Button variant="outline" className="rounded-md" onClick={handleExportTotalsCsv}>Export Totals (CSV)</Button>
               </div>
 
-              <AnalyticsTotalsRadial sellers={analyticsData} title="Totals (Amount vs Weight)" />
+              <AnalyticsTotalsRadial
+                sellers={rangeApplied ? [{ id: 'range', amount: rangeAmount, kg: rangeKg }] as any : analyticsData as any}
+                title={rangeApplied ? `Totals (Amount vs Weight) — ${fromDate || '-'} to ${toDate || '-'}` : 'Totals (Amount vs Weight)'}
+              />
             </div>
           </DialogContent>
         </Dialog>
