@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import ReactECharts from 'echarts-for-react';
 import * as echarts from 'echarts';
 
@@ -11,10 +11,13 @@ interface SellerLiteTotals {
 interface AnalyticsTotalsRadialProps {
   sellers: SellerLiteTotals[];
   title?: string;
+  show?: 'both' | 'amount' | 'weight';
 }
 
 // A more unique totals visualization using concentric radial bars (polar coordinates)
-const AnalyticsTotalsRadial: React.FC<AnalyticsTotalsRadialProps> = ({ sellers, title = 'Totals' }) => {
+const AnalyticsTotalsRadial: React.FC<AnalyticsTotalsRadialProps> = ({ sellers, title = 'Totals', show: showProp = 'both' }) => {
+  const [show, setShow] = useState<'both' | 'amount' | 'weight'>(showProp);
+  const chartRef = useRef<ReactECharts | null>(null);
   const { totalAmount, totalKg, maxVal } = useMemo(() => {
     const amt = sellers.reduce((s, x) => s + Number(x.amount || 0), 0);
     const kg = sellers.reduce((s, x) => s + Number(x.kg || 0), 0);
@@ -31,12 +34,9 @@ const AnalyticsTotalsRadial: React.FC<AnalyticsTotalsRadialProps> = ({ sellers, 
         return `${p.marker} ${p.name}: ${isAmt ? '₹' + v.toFixed(2) : v.toFixed(2) + ' kg'}`;
       }
     },
-    title: {
-      text: title,
-      left: 'center',
-      top: 8,
-      textStyle: { fontWeight: 600 }
-    },
+    animation: true,
+    animationDuration: 800,
+    animationEasing: 'cubicOut',
     polar: {
       radius: ['24%', '80%']
     },
@@ -51,7 +51,7 @@ const AnalyticsTotalsRadial: React.FC<AnalyticsTotalsRadialProps> = ({ sellers, 
     },
     radiusAxis: {
       type: 'category',
-      data: ['Total Weight', 'Total Amount'], // inner to outer order
+      data: show === 'both' ? ['Total Weight', 'Total Amount'] : (show === 'amount' ? ['Total Amount'] : ['Total Weight']),
       z: 10,
       axisLine: { show: false },
       axisTick: { show: false },
@@ -59,13 +59,13 @@ const AnalyticsTotalsRadial: React.FC<AnalyticsTotalsRadialProps> = ({ sellers, 
     },
     grid: {},
     series: [
-      {
+      ...(show !== 'weight' ? [{
         name: 'Total Amount',
         type: 'bar',
         coordinateSystem: 'polar',
         roundCap: true,
         barWidth: 28,
-        data: [0, totalAmount], // aligned with radiusAxis categories
+        data: show === 'both' ? [0, totalAmount] : [totalAmount],
         itemStyle: {
           color: new (echarts as any).graphic.LinearGradient(0, 0, 1, 0, [
             { offset: 0, color: '#86efac' },
@@ -74,14 +74,14 @@ const AnalyticsTotalsRadial: React.FC<AnalyticsTotalsRadialProps> = ({ sellers, 
           shadowBlur: 6,
           shadowColor: 'rgba(22, 163, 74, 0.25)'
         }
-      },
-      {
+      }] : []),
+      ...(show !== 'amount' ? [{
         name: 'Total Weight',
         type: 'bar',
         coordinateSystem: 'polar',
         roundCap: true,
         barWidth: 28,
-        data: [totalKg, 0],
+        data: show === 'both' ? [totalKg, 0] : [totalKg],
         itemStyle: {
           color: new (echarts as any).graphic.LinearGradient(0, 0, 1, 0, [
             { offset: 0, color: '#93c5fd' },
@@ -90,7 +90,7 @@ const AnalyticsTotalsRadial: React.FC<AnalyticsTotalsRadialProps> = ({ sellers, 
           shadowBlur: 6,
           shadowColor: 'rgba(59, 130, 246, 0.25)'
         }
-      },
+      }] : []),
       // Center labels
       {
         type: 'pie',
@@ -108,11 +108,34 @@ const AnalyticsTotalsRadial: React.FC<AnalyticsTotalsRadialProps> = ({ sellers, 
         itemStyle: { color: 'transparent' }
       }
     ]
-  }), [title, totalAmount, totalKg, maxVal]);
+  }), [show, totalAmount, totalKg, maxVal]);
+
+  const handleExport = () => {
+    const inst = chartRef.current?.getEchartsInstance?.();
+    if (!inst) return;
+    const url = inst.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#ffffff' });
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'analytics_totals.png';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
 
   return (
     <div className="surface-card p-4 rounded-lg">
-      <ReactECharts option={option as any} echarts={echarts as any} style={{ height: 400, width: '100%' }} />
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-lg font-semibold">{title}</h3>
+        <div className="flex gap-2">
+          <div className="inline-flex rounded-md overflow-hidden border">
+            <button className={`px-3 py-1 text-sm ${show==='both'?'bg-primary text-primary-foreground':'bg-background'}`} onClick={()=>setShow('both')}>Both</button>
+            <button className={`px-3 py-1 text-sm ${show==='amount'?'bg-primary text-primary-foreground':'bg-background'}`} onClick={()=>setShow('amount')}>Amount</button>
+            <button className={`px-3 py-1 text-sm ${show==='weight'?'bg-primary text-primary-foreground':'bg-background'}`} onClick={()=>setShow('weight')}>Weight</button>
+          </div>
+          <button onClick={handleExport} className="px-3 py-1 text-sm border rounded-md">Export PNG</button>
+        </div>
+      </div>
+      <ReactECharts ref={chartRef as any} option={option as any} echarts={echarts as any} style={{ height: 400, width: '100%' }} />
     </div>
   );
 };
