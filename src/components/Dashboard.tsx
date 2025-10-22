@@ -9,7 +9,7 @@ import { ProfileCard } from "./ProfileCard";
 import { Plus, BarChart3 } from "lucide-react";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import AnalyticsTotals from "./AnalyticsTotals";
+import AnalyticsTotalsRadial from "./AnalyticsTotalsRadial";
 
 interface Profile {
   owner_name: string;
@@ -149,7 +149,7 @@ export const Dashboard = () => {
               </DialogTitle>
             </DialogHeader>
             <div className="space-y-6 mt-4">
-              <AnalyticsTotals sellers={analyticsData} title="Totals (Amount vs Weight)" />
+              <AnalyticsTotalsRadial sellers={analyticsData} title="Totals (Amount vs Weight)" />
             </div>
           </DialogContent>
         </Dialog>
