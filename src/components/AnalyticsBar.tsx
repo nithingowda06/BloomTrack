@@ -41,7 +41,11 @@ const AnalyticsBar: React.FC<AnalyticsBarProps> = ({ sellers, topN = 10 }) => {
     legend: {
       data: ['Weight', 'Amount']
     },
-    grid: { left: 40, right: 50, bottom: 40, top: 40 },
+    grid: { left: 48, right: 56, bottom: 64, top: 32 },
+    dataZoom: [
+      { type: 'inside', start: 0, end: 100 },
+      { type: 'slider', height: 18, bottom: 16 }
+    ],
     xAxis: {
       type: 'category',
       data: names,
@@ -57,7 +61,10 @@ const AnalyticsBar: React.FC<AnalyticsBarProps> = ({ sellers, topN = 10 }) => {
       {
         type: 'value',
         name: '₹',
-        axisLabel: { color: '#6b7280' },
+        axisLabel: {
+          color: '#6b7280',
+          formatter: (v: number) => `₹${v}`
+        },
         splitLine: { show: false }
       }
     ],
@@ -66,16 +73,40 @@ const AnalyticsBar: React.FC<AnalyticsBarProps> = ({ sellers, topN = 10 }) => {
         name: 'Weight',
         type: 'bar',
         data: weights,
-        itemStyle: { color: '#60a5fa' },
-        barMaxWidth: 32
+        itemStyle: {
+          color: new (echarts as any).graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: '#93c5fd' },
+            { offset: 1, color: '#3b82f6' }
+          ])
+        },
+        label: {
+          show: true,
+          position: 'top',
+          formatter: (p: any) => `${Number(p.value).toFixed(1)} kg`,
+          color: '#6b7280'
+        },
+        barMaxWidth: 36,
+        emphasis: { focus: 'series' }
       },
       {
         name: 'Amount',
         type: 'bar',
         yAxisIndex: 1,
         data: amounts,
-        itemStyle: { color: '#22c55e' },
-        barMaxWidth: 32
+        itemStyle: {
+          color: new (echarts as any).graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: '#86efac' },
+            { offset: 1, color: '#16a34a' }
+          ])
+        },
+        label: {
+          show: true,
+          position: 'top',
+          formatter: (p: any) => `₹${Number(p.value).toFixed(0)}`,
+          color: '#6b7280'
+        },
+        barMaxWidth: 36,
+        emphasis: { focus: 'series' }
       }
     ]
   }), [names, weights, amounts]);
