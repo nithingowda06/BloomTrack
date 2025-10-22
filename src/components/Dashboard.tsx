@@ -261,7 +261,7 @@ export const Dashboard = () => {
                   <input type="date" className="w-full px-3 py-2 border rounded-md bg-background" value={toDate} onChange={(e)=>setToDate(e.target.value)} />
                 </div>
                 <Button onClick={handleApplyRange} disabled={rangeLoading} className="rounded-md">
-                  {rangeLoading ? 'Calculating…' : 'Apply'}
+                  {rangeLoading ? 'Calculating...' : 'Apply'}
                 </Button>
                 {rangeApplied && (
                   <Button variant="ghost" onClick={()=>{ setFromDate(''); setToDate(''); setRangeApplied(false); }} className="rounded-md">
@@ -293,12 +293,11 @@ export const Dashboard = () => {
 
               <AnalyticsTotals
                 sellers={rangeApplied ? [{ id: 'range', amount: rangeAmount, kg: rangeKg }] as any : analyticsData as any}
-                title={rangeApplied ? `Totals (Amount vs Weight) — ${fromDate || '-'} to ${toDate || '-'}` : 'Totals (Amount vs Weight)'}
+                title={rangeApplied ? 'Totals (Amount vs Weight) - ' + (fromDate || '-') + ' to ' + (toDate || '-') : 'Totals (Amount vs Weight)'}
               />
             </div>
           </DialogContent>
         </Dialog>
-      </div>
     </div>
   );
 };
