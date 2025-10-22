@@ -41,6 +41,7 @@ export const Dashboard = () => {
   const [rangeKg, setRangeKg] = useState<number>(0);
   const [rangeLoading, setRangeLoading] = useState<boolean>(false);
   const [rangeApplied, setRangeApplied] = useState<boolean>(false);
+  const [rangeSellerCount, setRangeSellerCount] = useState<number>(0);
 
   useEffect(() => {
     fetchProfile();
@@ -114,6 +115,19 @@ export const Dashboard = () => {
         return `${yy}-${mm}-${dd}`;
       }
     }
+    // support dd/MM/yyyy
+    if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
+      const [dd, mm, yy] = s.split('/').map(Number);
+      if (dd && mm && yy) {
+        const d = new Date(yy, mm - 1, dd);
+        if (!isNaN(d.getTime())) {
+          const yys = d.getFullYear();
+          const mms = String(d.getMonth() + 1).padStart(2, '0');
+          const dds = String(d.getDate()).padStart(2, '0');
+          return `${yys}-${mms}-${dds}`;
+        }
+      }
+    }
     if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
     const d = new Date(s);
     if (isNaN(d.getTime())) return '';
@@ -132,9 +146,9 @@ export const Dashboard = () => {
   };
 
   const handleApplyRange = async () => {
-    const f = toLocalYMD(fromDate);
-    const t = toLocalYMD(toDate);
-    if (!f && !t) {
+    const fromStr = toLocalYMD(fromDate);
+    const toStr = toLocalYMD(toDate);
+    if (!fromStr && !toStr) {
       setRangeApplied(false);
       setRangeAmount(0);
       setRangeKg(0);
@@ -145,20 +159,25 @@ export const Dashboard = () => {
     try {
       let amt = 0;
       let kg = 0;
+      let sellerCount = 0;
       await Promise.all(analyticsData.map(async (s) => {
         try {
           const txns = await sellerApi.getTransactions(s.id);
-          txns.forEach((t: any) => {
-            const dsrc = t.transaction_date || t.created_at || '';
-            if (isWithinRange(String(dsrc), f, t)) {
-              kg += Number(t.kg_added || 0);
-              amt += Number(t.amount_added || 0);
+          let hasData = false;
+          txns.forEach((tx: any) => {
+            const dsrc = tx.transaction_date || tx.created_at || '';
+            if (isWithinRange(String(dsrc), fromStr, toStr)) {
+              kg += Number(tx.kg_added || 0);
+              amt += Number(tx.amount_added || 0);
+              hasData = true;
             }
           });
+          if (hasData) sellerCount += 1;
         } catch {}
       }));
       setRangeAmount(amt);
       setRangeKg(kg);
+      setRangeSellerCount(sellerCount);
       setRangeApplied(true);
       toast.success('Range applied');
     } finally {
@@ -167,9 +186,13 @@ export const Dashboard = () => {
   };
 
   const handleCopyTotals = async () => {
-    const amt = rangeApplied ? rangeAmount : analyticsTotalAmount;
-    const kg = rangeApplied ? rangeKg : analyticsTotalKg;
-    const text = `Total Sellers: ${analyticsData.length}\nTotal Amount: ₹${amt.toFixed(2)}\nTotal Weight: ${kg.toFixed(2)} kg${rangeApplied ? `\nRange: ${fromDate || '-'} to ${toDate || '-'}` : ''}`;
+    if (!rangeApplied) {
+      toast.info('Select a date range first');
+      return;
+    }
+    const amt = rangeAmount;
+    const kg = rangeKg;
+    const text = `Total Sellers: ${rangeSellerCount}\nTotal Amount: ₹${amt.toFixed(2)}\nTotal Weight: ${kg.toFixed(2)} kg\nRange: ${fromDate || '-'} to ${toDate || '-'}`;
     try {
       await navigator.clipboard.writeText(text);
       toast.success('Totals copied to clipboard');
@@ -179,10 +202,14 @@ export const Dashboard = () => {
   };
 
   const handleExportTotalsCsv = () => {
-    const amt = rangeApplied ? rangeAmount : analyticsTotalAmount;
-    const kg = rangeApplied ? rangeKg : analyticsTotalKg;
+    if (!rangeApplied) {
+      toast.info('Select a date range first');
+      return;
+    }
+    const amt = rangeAmount;
+    const kg = rangeKg;
     const headers = ['total_sellers','total_amount','total_kg','from','to'];
-    const row = [String(analyticsData.length), amt.toFixed(2), kg.toFixed(2), (fromDate||''), (toDate||'')];
+    const row = [String(rangeSellerCount), amt.toFixed(2), kg.toFixed(2), (fromDate||''), (toDate||'')];
     const csv = headers.join(',') + "\n" + row.join(',') + "\n";
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -264,7 +291,7 @@ export const Dashboard = () => {
                   {rangeLoading ? 'Calculating...' : 'Apply'}
                 </Button>
                 {rangeApplied && (
-                  <Button variant="ghost" onClick={()=>{ setFromDate(''); setToDate(''); setRangeApplied(false); }} className="rounded-md">
+                  <Button variant="ghost" onClick={()=>{ setFromDate(''); setToDate(''); setRangeApplied(false); setRangeAmount(0); setRangeKg(0); setRangeSellerCount(0); }} className="rounded-md">
                     Clear
                   </Button>
                 )}
@@ -273,26 +300,26 @@ export const Dashboard = () => {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="surface-card p-4 rounded-md">
                   <div className="text-sm text-muted-foreground mb-1">Total Sellers</div>
-                  <div className="text-2xl font-bold text-primary">{analyticsData.length}</div>
+                  <div className="text-2xl font-bold text-primary">{rangeApplied ? rangeSellerCount : 0}</div>
                 </div>
                 <div className="surface-card p-4 rounded-md">
                   <div className="text-sm text-muted-foreground mb-1">Total Amount</div>
-                  <div className="text-2xl font-bold text-green-600">₹{(rangeApplied ? rangeAmount : analyticsTotalAmount).toFixed(2)}</div>
+                  <div className="text-2xl font-bold text-green-600">₹{(rangeApplied ? rangeAmount : 0).toFixed(2)}</div>
                 </div>
                 <div className="surface-card p-4 rounded-md">
                   <div className="text-sm text-muted-foreground mb-1">Total Weight</div>
-                  <div className="text-2xl font-bold text-blue-600">{(rangeApplied ? rangeKg : analyticsTotalKg).toFixed(2)} kg</div>
+                  <div className="text-2xl font-bold text-blue-600">{(rangeApplied ? rangeKg : 0).toFixed(2)} kg</div>
                 </div>
               </div>
 
               {/* Actions */}
               <div className="flex flex-wrap gap-2">
-                <Button variant="outline" className="rounded-md" onClick={handleCopyTotals}>Copy Totals</Button>
-                <Button variant="outline" className="rounded-md" onClick={handleExportTotalsCsv}>Export Totals (CSV)</Button>
+                <Button variant="outline" className="rounded-md" onClick={handleCopyTotals} disabled={!rangeApplied}>Copy Totals</Button>
+                <Button variant="outline" className="rounded-md" onClick={handleExportTotalsCsv} disabled={!rangeApplied}>Export Totals (CSV)</Button>
               </div>
 
               <AnalyticsTotals
-                sellers={rangeApplied ? [{ id: 'range', amount: rangeAmount, kg: rangeKg }] as any : analyticsData as any}
+                sellers={[{ id: 'display', amount: (rangeApplied ? rangeAmount : 0), kg: (rangeApplied ? rangeKg : 0) }] as any}
                 title={rangeApplied ? 'Totals (Amount vs Weight) - ' + (fromDate || '-') + ' to ' + (toDate || '-') : 'Totals (Amount vs Weight)'}
               />
             </div>
