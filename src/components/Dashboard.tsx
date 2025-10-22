@@ -9,7 +9,7 @@ import { ProfileCard } from "./ProfileCard";
 import { Plus, BarChart3 } from "lucide-react";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import AnalyticsTotalsRadial from "./AnalyticsTotalsRadial";
+import AnalyticsTotals from "./AnalyticsTotals";
 
 interface Profile {
   owner_name: string;
@@ -291,7 +291,7 @@ export const Dashboard = () => {
                 <Button variant="outline" className="rounded-md" onClick={handleExportTotalsCsv}>Export Totals (CSV)</Button>
               </div>
 
-              <AnalyticsTotalsRadial
+              <AnalyticsTotals
                 sellers={rangeApplied ? [{ id: 'range', amount: rangeAmount, kg: rangeKg }] as any : analyticsData as any}
                 title={rangeApplied ? `Totals (Amount vs Weight) — ${fromDate || '-'} to ${toDate || '-'}` : 'Totals (Amount vs Weight)'}
               />
