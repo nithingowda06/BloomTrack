@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { authApi, profileApi, sellerApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Header } from "./Header";
@@ -9,7 +9,7 @@ import { ProfileCard } from "./ProfileCard";
 import { Plus, BarChart3 } from "lucide-react";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import AnalyticsBar from "./AnalyticsBar";
+import AnalyticsTotals from "./AnalyticsTotals";
 
 interface Profile {
   owner_name: string;
@@ -34,7 +34,6 @@ export const Dashboard = () => {
   const [analyticsData, setAnalyticsData] = useState<Seller[]>([]);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isAnalyticsOpen, setIsAnalyticsOpen] = useState(false);
-  const [serialFilter, setSerialFilter] = useState<string>("");
   const [lastSearchQuery, setLastSearchQuery] = useState<string>("");
 
   useEffect(() => {
@@ -96,12 +95,6 @@ export const Dashboard = () => {
   const analyticsTotalAmount = analyticsData.reduce((sum, seller) => sum + Number(seller.amount), 0);
   const analyticsTotalKg = analyticsData.reduce((sum, seller) => sum + Number(seller.kg), 0);
 
-  const filteredAnalyticsData = useMemo(() => {
-    const q = serialFilter.trim();
-    if (!q) return analyticsData;
-    return analyticsData.filter((s) => String(s.serial_number || "").toLowerCase().includes(q.toLowerCase()));
-  }, [analyticsData, serialFilter]);
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-accent/10 to-background">
       <Header />
@@ -156,58 +149,7 @@ export const Dashboard = () => {
               </DialogTitle>
             </DialogHeader>
             <div className="space-y-6 mt-4">
-              {/* Serial filter */}
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-                <div className="flex-1">
-                  <label className="text-sm text-muted-foreground block mb-1">Filter by Serial Number</label>
-                  <input
-                    type="text"
-                    value={serialFilter}
-                    onChange={(e) => setSerialFilter(e.target.value)}
-                    placeholder="Enter serial number (e.g., 102)"
-                    className="w-full px-3 py-2 border rounded-md bg-background"
-                  />
-                </div>
-                {serialFilter.trim() && (
-                  <div className="text-sm text-muted-foreground mt-1 sm:mt-6">
-                    Matches: {filteredAnalyticsData.length}
-                  </div>
-                )}
-              </div>
-              {/* Summary Cards */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="surface-card p-4">
-                  <div className="text-sm text-muted-foreground mb-1">Total Records</div>
-                  <div className="text-2xl font-bold text-primary">{analyticsData.length}</div>
-                </div>
-                <div className="surface-card p-4">
-                  <div className="text-sm text-muted-foreground mb-1">Total Amount</div>
-                  <div className="text-2xl font-bold text-green-600">₹{analyticsTotalAmount.toFixed(2)}</div>
-                </div>
-                <div className="surface-card p-4">
-                  <div className="text-sm text-muted-foreground mb-1">Total Weight</div>
-                  <div className="text-2xl font-bold text-blue-600">{analyticsTotalKg.toFixed(2)} kg</div>
-                </div>
-              </div>
-
-              {/* Average Values */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="surface-card p-4">
-                  <div className="text-sm text-muted-foreground mb-1">Average Amount per Seller</div>
-                  <div className="text-xl font-bold text-primary">₹{(analyticsTotalAmount / analyticsData.length).toFixed(2)}</div>
-                </div>
-                <div className="surface-card p-4">
-                  <div className="text-sm text-muted-foreground mb-1">Average Weight per Seller</div>
-                  <div className="text-xl font-bold text-primary">{(analyticsTotalKg / analyticsData.length).toFixed(2)} kg</div>
-                </div>
-              </div>
-
-              {/* Combined 2D Analytics */}
-              {filteredAnalyticsData.length === 0 ? (
-                <div className="surface-card p-6 rounded-md text-sm text-muted-foreground">No sellers found for that serial number.</div>
-              ) : (
-                <AnalyticsBar sellers={filteredAnalyticsData} topN={10} />
-              )}
+              <AnalyticsTotals sellers={analyticsData} title="Totals (Amount vs Weight)" />
             </div>
           </DialogContent>
         </Dialog>
