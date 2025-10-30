@@ -23,7 +23,7 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Middleware
-// Explicit CORS configuration to allow Netlify deployment and local dev
+// Explicit CORS configuration to allow Netlify deployment(s), Render, and local dev
 const allowedOrigins = [
   'https://bloomtrack1.netlify.app',
   'http://localhost:5173',
@@ -35,6 +35,18 @@ app.use(
     origin: (origin, callback) => {
       if (!origin) return callback(null, true); // allow curl/postman and same-origin
       if (allowedOrigins.includes(origin)) return callback(null, true);
+      try {
+        const url = new URL(origin);
+        const host = url.hostname || '';
+        // Allow any Netlify deploy/preview for this app and onrender domains
+        if (host.endsWith('.netlify.app') || host.endsWith('.onrender.com')) {
+          return callback(null, true);
+        }
+        // Allow other local dev ports
+        if (host === 'localhost' || host === '127.0.0.1') {
+          return callback(null, true);
+        }
+      } catch {}
       return callback(new Error('Not allowed by CORS'));
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
