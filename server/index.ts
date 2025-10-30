@@ -43,17 +43,7 @@ app.use(
   })
 );
 
-// Ensure all preflight requests are handled
-// Use '/api/*' instead of raw '*' to avoid path-to-regexp errors in some environments
-app.options(
-  '/api/*',
-  cors({
-    origin: allowedOrigins,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-    credentials: true
-  })
-);
+// Preflight requests are handled by the CORS middleware above; explicit wildcard OPTIONS route removed
 app.use(express.json());
 
 // Routes
