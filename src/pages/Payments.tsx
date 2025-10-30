@@ -360,36 +360,14 @@ const Payments: React.FC = () => {
     if (!result?.seller?.id) return { kg: 0, amount: 0 };
     const selFromKey = normDate(fromDate);
     const selToKey = normDate(toDate);
-    // Helper to parse YYYY-MM-DD to Date at local start/end
-    const toLocalStart = (ymd: string) => {
-      const [y, m, d] = (ymd || '').split('-').map(Number);
-      if (!y || !m || !d) return null;
-      return new Date(y, (m || 1) - 1, d || 1, 0, 0, 0, 0);
-    };
-    const toLocalEnd = (ymd: string) => {
-      const [y, m, d] = (ymd || '').split('-').map(Number);
-      if (!y || !m || !d) return null;
-      return new Date(y, (m || 1) - 1, d || 1, 23, 59, 59, 999);
-    };
-
+    // If no UI date filter, include all payments; otherwise require exact match.
     const uiHasNoDates = !selFromKey && !selToKey;
-    const uiFrom = selFromKey ? toLocalStart(selFromKey) : null;
-    const uiTo = selToKey ? toLocalEnd(selToKey) : null;
-
     const paid = (payments || []).filter((p) => {
+      if (uiHasNoDates) return true;
       const pFromKey = normDate((p as any).from_date);
       const pToKey = normDate((p as any).to_date);
-      const payHasNoDates = !pFromKey && !pToKey;
-      if (uiHasNoDates) return true; // include all when no UI filter
-      if (payHasNoDates) return true; // apply undated payments to any UI range
-      // Exact match still valid
-      if (pFromKey === selFromKey && pToKey === selToKey) return true;
-      // Range containment: include payment fully within the UI range
-      const pFrom = pFromKey ? toLocalStart(pFromKey) : null;
-      const pTo = pToKey ? toLocalEnd(pToKey) : null;
-      if (uiFrom && pFrom && pFrom < uiFrom) return false;
-      if (uiTo && pTo && pTo > uiTo) return false;
-      return true;
+      // Only count payments that exactly match the selected From/To.
+      return pFromKey === selFromKey && pToKey === selToKey;
     });
     const amount = paid.reduce((s, p) => s + Number(p.amount || 0), 0);
     const kg = paid.reduce((s, p) => s + Number(p.cleared_kg || 0), 0);
