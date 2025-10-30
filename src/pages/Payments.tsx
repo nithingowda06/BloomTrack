@@ -355,20 +355,27 @@ const Payments: React.FC = () => {
     return filtered.kg > 0 ? filtered.amount / filtered.kg : 0;
   }, [filtered]);
 
-  // Sum of payments saved for the selected range
+  // Sum of payments within/overlapping the selected range
   const paidForRange = useMemo(() => {
     if (!result?.seller?.id) return { kg: 0, amount: 0 };
-    const selFromKey = normDate(fromDate);
-    const selToKey = normDate(toDate);
-    // If no UI date filter, include all payments; otherwise require exact match.
-    const uiHasNoDates = !selFromKey && !selToKey;
-    const paid = (payments || []).filter((p) => {
+    const selFrom = normDate(fromDate) || '';
+    const selTo = normDate(toDate) || '';
+    const uiHasNoDates = !selFrom && !selTo;
+
+    const uiStart = selFrom || '0000-00-00';
+    const uiEnd = selTo || '9999-99-99';
+
+    const overlaps = (p: any) => {
       if (uiHasNoDates) return true;
-      const pFromKey = normDate((p as any).from_date);
-      const pToKey = normDate((p as any).to_date);
-      // Only count payments that exactly match the selected From/To.
-      return pFromKey === selFromKey && pToKey === selToKey;
-    });
+      const pFrom = normDate(p.from_date) || '';
+      const pTo = normDate(p.to_date) || '';
+      const pStart = pFrom || '0000-00-00';
+      const pEnd = pTo || '9999-99-99';
+      // overlap if pEnd >= uiStart AND pStart <= uiEnd (lexicographic ok for YYYY-MM-DD)
+      return !(pEnd < uiStart || pStart > uiEnd);
+    };
+
+    const paid = (payments || []).filter(overlaps);
     const amount = paid.reduce((s, p) => s + Number(p.amount || 0), 0);
     const kg = paid.reduce((s, p) => s + Number(p.cleared_kg || 0), 0);
     return { kg, amount };
