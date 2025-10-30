@@ -44,8 +44,9 @@ app.use(
 );
 
 // Ensure all preflight requests are handled
+// Use '/api/*' instead of raw '*' to avoid path-to-regexp errors in some environments
 app.options(
-  '*',
+  '/api/*',
   cors({
     origin: allowedOrigins,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
