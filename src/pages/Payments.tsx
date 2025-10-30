@@ -447,6 +447,18 @@ const Payments: React.FC = () => {
     return { clearedAmount, clearedKg, remainAmount, remainKg };
   }, [paymentAmount, paymentWeight, lastEdited, filtered, avgRate, payments, result, fromDate, toDate, lastSaved, paidOverride, paidForRange]);
 
+  // Display totals for the top cards: when no date range is selected,
+  // match the Purchases page semantics (net outstanding = purchases - payments)
+  const displayTotals = useMemo(() => {
+    const uiHasNoDates = !normDate(fromDate) && !normDate(toDate);
+    if (uiHasNoDates) {
+      const kg = Math.max(0, Number(filtered.kg || 0) - Number(paidForRange.kg || 0));
+      const amount = Math.max(0, Number(filtered.amount || 0) - Number(paidForRange.amount || 0));
+      return { kg, amount };
+    }
+    return { kg: Number(filtered.kg || 0), amount: Number(filtered.amount || 0) };
+  }, [fromDate, toDate, filtered, paidForRange]);
+
   const handleDownloadPdf = async () => {
     if (!result?.seller) return;
     // Prefer the receipt context if available (just-paid values)
@@ -597,11 +609,11 @@ const Payments: React.FC = () => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="rounded-lg p-4 bg-blue-50 dark:bg-blue-950 shadow-sm text-center">
                   <div className="text-sm text-muted-foreground mb-1">Total Weight</div>
-                  <div className="text-2xl font-bold text-blue-700">{filtered.kg.toFixed(2)} kg</div>
+                  <div className="text-2xl font-bold text-blue-700">{displayTotals.kg.toFixed(2)} kg</div>
                 </div>
                 <div className="rounded-lg p-4 bg-emerald-50 dark:bg-emerald-950 shadow-sm text-center">
                   <div className="text-sm text-muted-foreground mb-1">Total Amount</div>
-                  <div className="text-2xl font-bold text-emerald-700">₹{filtered.amount.toFixed(2)}</div>
+                  <div className="text-2xl font-bold text-emerald-700">₹{displayTotals.amount.toFixed(2)}</div>
                 </div>
               </div>
 
