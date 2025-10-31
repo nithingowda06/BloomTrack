@@ -72,26 +72,28 @@ const Payments: React.FC = () => {
           <style>
             ${thermalMode ? `
             @page { size: 80mm auto; margin: 0; }
-            body { width: 80mm; margin: 0; font-family: -apple-system, Segoe UI, Roboto, Arial; padding: 6px 8px; }
-            h1 { font-size: 14px; margin: 0 0 6px 0; text-align:center; }
-            .muted { color: #444; font-size: 10px; margin: 0 0 6px 0; text-align:center; }
+            body { width: 80mm; margin: 0; font-family: -apple-system, Segoe UI, Roboto, Arial; padding: 6px 8px; font-weight: 500; }
+            h1 { font-size: 14px; margin: 0 0 6px 0; text-align:center; font-weight: 800; }
+            .muted { color: #222; font-size: 10px; margin: 0 0 6px 0; text-align:center; font-weight: 600; }
             table { width: 100%; border-collapse: collapse; margin-top: 6px; }
-            th, td { border-top: 1px dashed #999; padding: 6px 0; font-size: 11px; }
-            th { text-align: left; }
+            th, td { border-top: 1px dashed #000; padding: 6px 0; font-size: 11px; }
+            th { text-align: left; font-weight: 800; }
+            td { font-weight: 700; }
             .shop { text-align:center; margin-bottom:6px; }
-            .shop h2 { margin:0 0 4px 0; font-size:12px; }
-            .shop div { font-size:11px; line-height:1.4; }
-            .hr { border-top: 1px dashed #999; margin: 6px 0; }
+            .shop h2 { margin:0 0 4px 0; font-size:12px; font-weight: 800; }
+            .shop div { font-size:11px; line-height:1.4; font-weight: 700; }
+            .hr { border-top: 1px dashed #000; margin: 6px 0; }
             ` : `
             body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial; padding: 20px; }
-            h1 { font-size: 20px; margin-bottom: 6px; }
-            .muted { color: #6b7280; font-size: 12px; margin-bottom: 14px; }
+            h1 { font-size: 22px; margin-bottom: 6px; font-weight: 900; }
+            .muted { color: #111827; font-size: 12px; margin-bottom: 14px; font-weight: 600; }
             table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-            th, td { border: 1px solid #ddd; padding: 8px; font-size: 12px; }
-            th { background: #f3f4f6; text-align: left; }
-            .shop { border:1px solid #e5e7eb; border-radius:8px; padding:12px; margin-bottom:12px; }
-            .shop h2 { margin:0 0 8px 0; font-size:16px; }
-            .shop div { font-size:13px; line-height:1.6; }
+            th, td { border: 1px solid #111827; padding: 8px; font-size: 13px; }
+            th { background: #f3f4f6; text-align: left; font-weight: 800; }
+            td { font-weight: 700; }
+            .shop { border:1px solid #111827; border-radius:8px; padding:12px; margin-bottom:12px; }
+            .shop h2 { margin:0 0 8px 0; font-size:16px; font-weight: 900; }
+            .shop div { font-size:13px; line-height:1.6; font-weight: 700; }
             `}
           </style>
         </head>
@@ -492,26 +494,28 @@ const Payments: React.FC = () => {
           <style>
             ${thermalMode ? `
             @page { size: 80mm auto; margin: 0; }
-            body { width: 80mm; margin: 0; font-family: -apple-system, Segoe UI, Roboto, Arial; padding: 6px 8px; }
-            h1 { font-size: 14px; margin: 0 0 6px 0; text-align:center; }
-            .muted { color: #444; font-size: 10px; margin: 0 0 6px 0; text-align:center; }
+            body { width: 80mm; margin: 0; font-family: -apple-system, Segoe UI, Roboto, Arial; padding: 6px 8px; font-weight: 500; }
+            h1 { font-size: 14px; margin: 0 0 6px 0; text-align:center; font-weight: 800; }
+            .muted { color: #222; font-size: 10px; margin: 0 0 6px 0; text-align:center; font-weight: 600; }
             table { width: 100%; border-collapse: collapse; margin-top: 6px; }
-            th, td { border-top: 1px dashed #999; padding: 6px 0; font-size: 11px; }
-            th { text-align: left; }
+            th, td { border-top: 1px dashed #000; padding: 6px 0; font-size: 11px; }
+            th { text-align: left; font-weight: 800; }
+            td { font-weight: 700; }
             .shop { text-align:center; margin-bottom:6px; }
-            .shop h2 { margin:0 0 4px 0; font-size:12px; }
-            .shop div { font-size:11px; line-height:1.4; }
-            .hr { border-top: 1px dashed #999; margin: 6px 0; }
+            .shop h2 { margin:0 0 4px 0; font-size:12px; font-weight: 800; }
+            .shop div { font-size:11px; line-height:1.4; font-weight: 700; }
+            .hr { border-top: 1px dashed #000; margin: 6px 0; }
             ` : `
             body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial; padding: 20px; }
-            h1 { font-size: 20px; margin-bottom: 6px; }
-            .muted { color: #6b7280; font-size: 12px; margin-bottom: 14px; }
+            h1 { font-size: 22px; margin-bottom: 6px; font-weight: 900; }
+            .muted { color: #111827; font-size: 12px; margin-bottom: 14px; font-weight: 600; }
             table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-            th, td { border: 1px solid #ddd; padding: 8px; font-size: 12px; }
-            th { background: #f3f4f6; text-align: left; }
-            .shop { border:1px solid #e5e7eb; border-radius:8px; padding:12px; margin-bottom:12px; }
-            .shop h2 { margin:0 0 8px 0; font-size:16px; }
-            .shop div { font-size:13px; line-height:1.6; }
+            th, td { border: 1px solid #111827; padding: 8px; font-size: 13px; }
+            th { background: #f3f4f6; text-align: left; font-weight: 800; }
+            td { font-weight: 700; }
+            .shop { border:1px solid #111827; border-radius:8px; padding:12px; margin-bottom:12px; }
+            .shop h2 { margin:0 0 8px 0; font-size:16px; font-weight: 900; }
+            .shop div { font-size:13px; line-height:1.6; font-weight: 700; }
             `}
           </style>
         </head>
