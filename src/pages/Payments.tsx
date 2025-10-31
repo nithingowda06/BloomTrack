@@ -473,12 +473,9 @@ const Payments: React.FC = () => {
     const useTo = receipt?.to ?? toDate;
     const paidAmt = receipt ? Number(receipt.amount || 0) : Number(cleared.clearedAmount || 0);
     const paidKg = receipt ? Number(receipt.kg || 0) : Number(cleared.clearedKg || 0);
-    // For the receipt, show totals as the amount being cleared (per your request),
-    // and compute Remaining using the same UI totals logic (displayTotals)
+    // For the receipt, show totals as the amount being cleared (per your request)
     const totalAmt = paidAmt;
     const totalKg = paidKg;
-    const remainingAmt = Math.max(0, Number(displayTotals.amount || 0) - paidAmt);
-    const remainingKg = Math.max(0, Number(displayTotals.kg || 0) - paidKg);
     const titleRange = `${useFrom || 'Start'} → ${useTo || 'End'}`;
     // Load shop profile
     let profile: any = null;
@@ -545,8 +542,7 @@ const Payments: React.FC = () => {
               <tr><${thermalMode ? 'th' : 'td'}>Total Amount</${thermalMode ? 'th' : 'td'}><td>₹${totalAmt.toFixed(2)}</td></tr>
               <tr><${thermalMode ? 'th' : 'td'}>Cleared Amount</${thermalMode ? 'th' : 'td'}><td>₹${paidAmt.toFixed(2)}</td></tr>
               <tr><${thermalMode ? 'th' : 'td'}>Cleared Weight</${thermalMode ? 'th' : 'td'}><td>${paidKg.toFixed(2)} kg</td></tr>
-              <tr><${thermalMode ? 'th' : 'td'}>Remaining Weight</${thermalMode ? 'th' : 'td'}><td>${remainingKg.toFixed(2)} kg</td></tr>
-              <tr><${thermalMode ? 'th' : 'td'}>Remaining Amount</${thermalMode ? 'th' : 'td'}><td>₹${remainingAmt.toFixed(2)}</td></tr>
+              
             </tbody>
           </table>
 
