@@ -149,6 +149,7 @@ export const sellerApi = {
     new_total_amount: number;
     new_total_kg: number;
     flower_name?: string;
+    less_weight?: number;
   }) => {
     return fetchWithAuth(`/sellers/${id}/transactions`, {
       method: 'POST',

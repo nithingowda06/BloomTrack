@@ -376,7 +376,7 @@ router.get('/:id/transactions', authenticateToken, async (req: AuthRequest, res:
 // Add a transaction record
 router.post('/:id/transactions', authenticateToken, async (req: AuthRequest, res: Response) => {
   const { id } = req.params;
-  const { transaction_date, amount_added, kg_added, previous_amount, previous_kg, new_total_amount, new_total_kg, flower_name } = req.body as any;
+  const { transaction_date, amount_added, kg_added, previous_amount, previous_kg, new_total_amount, new_total_kg, flower_name, less_weight } = req.body as any;
 
   try {
     // Verify the seller belongs to this user
@@ -391,10 +391,10 @@ router.post('/:id/transactions', authenticateToken, async (req: AuthRequest, res
 
     // Insert transaction
     const result = await pool.query(
-      `INSERT INTO seller_transactions (seller_id, transaction_date, amount_added, kg_added, previous_amount, previous_kg, new_total_amount, new_total_kg, flower_name)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO seller_transactions (seller_id, transaction_date, amount_added, kg_added, previous_amount, previous_kg, new_total_amount, new_total_kg, flower_name, less_weight)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
-      [id, transaction_date, amount_added, kg_added, previous_amount, previous_kg, new_total_amount, new_total_kg, flower_name || null]
+      [id, transaction_date, amount_added, kg_added, previous_amount, previous_kg, new_total_amount, new_total_kg, flower_name || null, (less_weight === undefined || less_weight === null) ? null : less_weight]
     );
 
     res.status(201).json(result.rows[0]);
@@ -629,12 +629,13 @@ router.get('/:id/payments', authenticateToken, async (req: AuthRequest, res: Res
 // Add a payment for a seller and update balances
 router.post('/:id/payments', authenticateToken, async (req: AuthRequest, res: Response) => {
   const { id } = req.params;
-  const { from_date, to_date, amount, cleared_kg, notes } = req.body as {
+  const { from_date, to_date, amount, cleared_kg, notes, transaction_id } = req.body as {
     from_date?: string;
     to_date?: string;
     amount: number;
     cleared_kg: number;
     notes?: string;
+    transaction_id?: string;
   };
 
   try {
@@ -660,10 +661,10 @@ router.post('/:id/payments', authenticateToken, async (req: AuthRequest, res: Re
 
     // Insert payment
     const insert = await pool.query(
-      `INSERT INTO payments (seller_id, paid_at, from_date, to_date, amount, cleared_kg, notes)
-       VALUES ($1, NOW(), $2, $3, $4, $5, $6)
+      `INSERT INTO payments (seller_id, paid_at, from_date, to_date, amount, cleared_kg, notes, transaction_id)
+       VALUES ($1, NOW(), $2, $3, $4, $5, $6, $7)
        RETURNING *`,
-      [id, from_date || null, to_date || null, amt, kg, notes || null]
+      [id, from_date || null, to_date || null, amt, kg, notes || null, transaction_id || null]
     );
 
     // Update seller current balances

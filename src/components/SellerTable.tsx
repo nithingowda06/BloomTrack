@@ -50,6 +50,7 @@ interface Transaction {
   salesman_name?: string;
   salesman_mobile?: string;
   salesman_address?: string;
+  less_weight?: number;
 }
 
 interface SoldToTransaction {
@@ -131,6 +132,46 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
   const [salesSeller, setSalesSeller] = useState<Seller | null>(null);
   const [saleToForView, setSaleToForView] = useState<SaleToContact[]>([]);
   const [salesSaving, setSalesSaving] = useState(false);
+  // Advance payment dialog state
+  const [advanceOpen, setAdvanceOpen] = useState(false);
+  const [advanceSeller, setAdvanceSeller] = useState<Seller | null>(null);
+  const [advanceAmount, setAdvanceAmount] = useState<string>('');
+  const [advanceNotes, setAdvanceNotes] = useState<string>('');
+  const [advanceSaving, setAdvanceSaving] = useState(false);
+  const [advanceDate, setAdvanceDate] = useState<string>('');
+  const [advanceTxnId, setAdvanceTxnId] = useState<string | null>(null);
+  const [advanceExistingAmt, setAdvanceExistingAmt] = useState<number>(0);
+
+  // Helper: normalize any input date to YYYY-MM-DD
+  const toYMD = (v: any) => {
+    const s = String(v || '').trim();
+    if (!s) return '';
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
+  };
+  // Helper: normalize to local calendar day (avoids UTC shift for ISO timestamps)
+  const calendarYMD = (v: any) => {
+    const s = String(v || '').trim();
+    if (!s) return '';
+    if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
+      const dt = new Date(s);
+      if (isNaN(dt.getTime())) return '';
+      const yy = dt.getFullYear();
+      const mm = String(dt.getMonth() + 1).padStart(2, '0');
+      const dd = String(dt.getDate()).padStart(2, '0');
+      return `${yy}-${mm}-${dd}`;
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    if (m) { const [, dd, mm, yyyy] = m; return `${yyyy}-${mm}-${dd}`; }
+    const dt = new Date(s);
+    if (isNaN(dt.getTime())) return '';
+    const yy = dt.getFullYear();
+    const mm = String(dt.getMonth() + 1).padStart(2, '0');
+    const dd = String(dt.getDate()).padStart(2, '0');
+    return `${yy}-${mm}-${dd}`;
+  };
   // Persist/restore Sold status per update using localStorage
   const SOLD_BADGES_KEY = 'seller_sold_badges_v1';
   useEffect(() => {
@@ -149,6 +190,14 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
   const [tablePayments, setTablePayments] = useState<Record<string, Array<{ id: string; paid_at: string; from_date?: string; to_date?: string; amount: number; cleared_kg: number }>>>({});
   // Period clear (local-only) UI state
   const [clearConfirm, setClearConfirm] = useState(false);
+  // UI-only field for subtracting weight alongside net weight (no logic wired yet)
+  const [minusKg, setMinusKg] = useState<number | ''>('');
+  // UI-only rate input for calculation helper (does not affect save)
+  const [ratePerKg, setRatePerKg] = useState<number | ''>('');
+  // Track if user manually edited Amount to avoid overriding it automatically
+  const [amountEdited, setAmountEdited] = useState<boolean>(false);
+  // Optional advance amount to record immediately after adding data (form-level)
+  const [addAdvanceAmount, setAddAdvanceAmount] = useState<string>('');
   
 
   // Helpers for local clear timestamps (per-seller for dialogs)
@@ -417,14 +466,14 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
         .slice()
         .sort((a: any, b: any) => new Date(a.sale_date).getTime() - new Date(b.sale_date).getTime())
         .forEach((s: any) => {
-          const key = calendarYMD((s as any).sale_date);
+          const key = toYMD((s as any).sale_date);
           const name = String((s as any).customer_name || '').trim();
           if (!name) return;
           salesByDate2.set(key, name);
         });
 
       const purchasesRows = (txns || []).map((t, i) => {
-        const dateKey = calendarYMD((t as any).transaction_date);
+        const dateKey = toYMD((t as any).transaction_date);
         const soldToNamesForDate = (() => {
           const byTxn = String(((t as any).salesman_name || '').trim())
             || String(((soldBadges as any)?.[(t as any).id] || '').trim());
@@ -519,9 +568,14 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
       for (const s of sellers) {
         try {
           const txns = await sellerApi.getTransactions(s.id);
-          map[s.id] = txns;
+          // Normalize dates to local calendar day to avoid timezone shifting
+          const norm = (txns || []).map((t: any) => ({
+            ...t,
+            transaction_date: calendarYMD((t as any).transaction_date),
+          }));
+          map[s.id] = norm as any;
           // collect any persisted salesman_name to restore badges
-          for (const t of txns || []) {
+          for (const t of norm || []) {
             const name = String((t as any).salesman_name || '').trim();
             if (name) badgesFromServer[(t as any).id] = name;
           }
@@ -658,7 +712,7 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
         });
 
         // Record transaction history
-        await sellerApi.addTransaction(addDataSeller.id, {
+        const createdTxn = await sellerApi.addTransaction(addDataSeller.id, {
           transaction_date: addDataSeller.date,
           amount_added: Number(addDataSeller.amount),
           kg_added: Number(addDataSeller.kg),
@@ -667,7 +721,28 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
           new_total_amount: newAmount,
           new_total_kg: newKg,
           flower_name: (flowerChoice === 'Others' ? flowerOther.trim() : flowerChoice) || undefined,
+          less_weight: (minusKg === '' ? undefined : Number(minusKg)),
         });
+
+        // If Advance provided, record a payment for this date
+        const adv = parseFloat(addAdvanceAmount || '');
+        if (adv > 0) {
+          try {
+            await sellerApi.addPayment(addDataSeller.id, ({
+              amount: adv,
+              cleared_kg: 0,
+              from_date: addDataSeller.date,
+              to_date: addDataSeller.date,
+              transaction_id: (createdTxn as any)?.id,
+              notes: (flowerChoice ? `Advance for ${flowerChoice}` : undefined),
+            } as any));
+            // Refresh payments for this seller in table cache
+            try {
+              const pays = await sellerApi.getPayments(addDataSeller.id);
+              setTablePayments((prev) => ({ ...prev, [addDataSeller.id]: pays || [] }));
+            } catch {}
+          } catch {}
+        }
 
         toast.success(`Data added successfully! New Total: ₹${newAmount.toFixed(2)} | ${newKg.toFixed(2)} kg`);
       }
@@ -675,6 +750,7 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
       setAddDataSeller(null);
       setOriginalSeller(null);
       setIsCreatingNew(false);
+      setAddAdvanceAmount('');
       onUpdate();
       // Refresh the table child rows for this seller so new row appears
       try {
@@ -695,11 +771,15 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
     setLoadingTransactions(true);
     try {
       const data = await sellerApi.getTransactions(sellerId);
-      setTransactions(data);
+      const norm = (data || []).map((t: any) => ({
+        ...t,
+        transaction_date: calendarYMD((t as any).transaction_date),
+      }));
+      setTransactions(norm as any);
       // Merge server-assigned salesman names into badges so they persist after reload
       try {
         const fromServer: Record<string, string> = {};
-        for (const t of data || []) {
+        for (const t of norm || []) {
           const name = String((t as any).salesman_name || '').trim();
           if (name) fromServer[(t as any).id] = name;
         }
@@ -981,105 +1061,136 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                         </div>
                       </TableCell>
                     </TableRow>
-                    {/* Child rows for each purchase update (newest first) */}
-                    {(tableTransactions[seller.id] || []).length > 0 && (
-                      <TableRow>
-                        <TableCell colSpan={6} className="bg-muted/50 text-sm tracking-wide text-muted-foreground">Updates (Purchases History)</TableCell>
-                      </TableRow>
-                    )}
-                    {([...((tableTransactions[seller.id] || []))]
-                      .filter((t) => Number(t.kg_added) !== 0 || Number(t.amount_added) !== 0)
-                      .sort((a, b) => new Date(b.transaction_date).getTime() - new Date(a.transaction_date).getTime())
-                    ).map((txn, idx) => (
-                      <TableRow key={txn.id} className={`${idx % 2 === 0 ? 'bg-accent/20' : 'bg-accent/40'} hover:bg-accent/50 cursor-pointer`} onClick={() => { setSelectedTxnSeller(seller); setSelectedTxn(txn); }}>
-                        <TableCell colSpan={6} className="py-2">
-                          <div className="flex items-center justify-between gap-3 px-2">
-                            <div className="flex items-center gap-3">
-                              <span className="inline-flex items-center justify-center w-6 h-6 text-xs font-semibold rounded-full bg-primary/10 text-primary">
-                                {idx + 1}
-                              </span>
-                              <span className="text-sm text-muted-foreground">Update</span>
-                              <span className="text-sm font-medium">{new Date(txn.transaction_date).toLocaleDateString()}</span>
-                            </div>
-                            <div className="flex items-center gap-5">
-                              {soldBadges[(txn as any).id] ? (
-                                <div className="flex flex-col items-center gap-0.5">
-                                  <span className="text-xs text-muted-foreground">Status</span>
-                                  <span className="inline-flex items-center px-2 py-1 rounded-full text-sm bg-amber-100 text-amber-700 border border-amber-200">
-                                    Sold to {soldBadges[(txn as any).id]}
-                                  </span>
-                                </div>
-                              ) : null}
-                              {(txn as any).flower_name ? (
-                                <div className="flex flex-col items-center gap-0.5">
-                                  <span className="text-xs text-muted-foreground">Flower</span>
-                                  <span className="inline-flex items-center px-2 py-1 rounded-full text-sm bg-violet-100 text-violet-700 border border-violet-200">
-                                    {(txn as any).flower_name}
-                                  </span>
-                                </div>
-                              ) : null}
-                              <div className="flex flex-col items-center gap-0.5">
-                                <span className="text-xs text-muted-foreground">Weight</span>
-                                <span className="inline-flex items-center px-2 py-1 rounded-full text-sm bg-blue-100 text-blue-700 border border-blue-200">+{Number(txn.kg_added).toFixed(2)} kg</span>
-                              </div>
-                              <div className="flex flex-col items-center gap-0.5">
-                                <span className="text-xs text-muted-foreground">Amount</span>
-                                <span className="inline-flex items-center px-2 py-1 rounded-full text-sm bg-emerald-100 text-emerald-700 border border-emerald-200">+₹{Number(txn.amount_added).toFixed(2)}</span>
-                              </div>
-                              <div className="inline-flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  className="text-sm h-8"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    const d = new Date((txn as any).transaction_date);
-                                    const yyyy = d.getFullYear();
-                                    const mm = String(d.getMonth() + 1).padStart(2, '0');
-                                    const dd = String(d.getDate()).padStart(2, '0');
-                                    const norm = `${yyyy}-${mm}-${dd}`;
-                                    setEditingTxnSeller(seller);
-                                    setEditingTxn({ ...(txn as any), transaction_date: norm } as any);
-                                    try { toast.message?.('Opening edit…'); } catch {}
-                                  }}
-                                >
-                                  Edit
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  className="text-sm h-8 text-red-600 border-red-200 hover:text-red-700"
-                                  onClick={(e) => { e.stopPropagation(); setDeletingTxnSeller(seller); setDeletingTxn(txn); try { toast.message?.('Confirm delete…'); } catch {} }}
-                                >
-                                  Delete
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  className="text-sm h-8"
-                                  onClick={(e) => { e.stopPropagation(); setSelectedTxnSeller(seller); setSelectedTxn(txn); try { toast.message?.('Opening view…'); } catch {} }}
-                                >
-                                  View
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  size="sm"
-                                  className="text-sm h-8"
-                                  onClick={(e) => { e.stopPropagation(); setSalesSeller(seller); setSalesTxn(txn); setSalesPromptData({ name: '', number: '', address: '', weight: Number((txn as any).kg_added || 0), amount: Number((txn as any).amount_added || 0), full: true }); setSalesPromptOpen(true); }}
-                                  disabled={!!soldBadges[(txn as any).id]}
-                                >
-                                  Sales
-                                </Button>
-                              </div>
-                            </div>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                    {/* Grouped by date with totals and per-date advances */}
+                    {(() => {
+                      const txns = (tableTransactions[seller.id] || [])
+                        .filter((t) => Number(t.kg_added) !== 0 || Number(t.amount_added) !== 0);
+                      if (txns.length === 0) return null;
+                      const groups: Record<string, Transaction[]> = {};
+                      for (const t of txns) {
+                        const k = calendarYMD((t as any).transaction_date);
+                        if (!k) continue;
+                        (groups[k] ||= []).push(t);
+                      }
+                      const dates = Object.keys(groups).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+                      return (
+                        <>
+                          {dates.map((dateKey) => {
+                            const list = groups[dateKey].sort((a, b) => {
+                              const ak = calendarYMD((a as any).transaction_date);
+                              const bk = calendarYMD((b as any).transaction_date);
+                              return ak < bk ? 1 : ak > bk ? -1 : 0;
+                            });
+                            const totalAmt = list.reduce((s, t) => s + Number((t as any).amount_added || 0), 0);
+                            // Paid for this date: payments where from_date/to_date include this date, or fallback to paid_at date match
+                            const pays = (tablePayments[seller.id] || []);
+                            const paidAmt = (pays || []).reduce((s, p: any) => {
+                              const amtNum = Number(String((p as any).amount ?? 0).toString().replace(/[^0-9.-]/g, '')) || 0;
+                              const fdK = calendarYMD((p as any).from_date);
+                              const tdK = calendarYMD((p as any).to_date);
+                              const paK = calendarYMD((p as any).paid_at);
+                              if (fdK && tdK) return (dateKey >= fdK && dateKey <= tdK) ? s + amtNum : s;
+                              return (paK && paK === dateKey) ? s + amtNum : s;
+                            }, 0);
+                            const remaining = Math.max(0, totalAmt - paidAmt);
+                            const displayDate = (() => { const [y,m,d] = dateKey.split('-'); return `${d}/${m}/${y}`; })();
+                            return (
+                              <React.Fragment key={dateKey}>
+                                {list.map((txn, idx) => (
+                                  <TableRow key={(txn as any).id} className={`${idx % 2 === 0 ? 'bg-accent/20' : 'bg-accent/40'} hover:bg-accent/50 cursor-pointer`} onClick={() => { setSelectedTxnSeller(seller); setSelectedTxn(txn); }}>
+                                    <TableCell colSpan={6} className="py-2">
+                                      <div className="flex items-center justify-between gap-3 px-2">
+                                        <div className="flex items-center gap-3">
+                                          <span className="inline-flex items-center justify-center w-6 h-6 text-xs font-semibold rounded-full bg-primary/10 text-primary">
+                                            {/* index reset per date */}
+                                          </span>
+                                          <span className="text-sm text-muted-foreground">Update</span>
+                                          {(() => {
+                                            const key = calendarYMD((txn as any).transaction_date);
+                                            const d = key && key.length >= 10 ? `${key.slice(8,10)}/${key.slice(5,7)}/${key.slice(0,4)}` : '—';
+                                            return <span className="text-sm font-medium">{d}</span>;
+                                          })()}
+                                        </div>
+                                        <div className="flex items-center gap-2 md:gap-3 flex-nowrap overflow-x-auto">
+                                          {(() => {
+                                            // Only show advance tied exactly to this transaction via transaction_id
+                                            const paidAmtRow = (pays || []).reduce((s, p: any) => {
+                                              const amtNum = Number(String((p as any).amount ?? 0).toString().replace(/[^0-9.-]/g, '')) || 0;
+                                              const tid = (p as any).transaction_id;
+                                              return (tid && tid === (txn as any).id) ? s + amtNum : s;
+                                            }, 0);
+                                            return (
+                                              <span className="inline-flex flex-col items-center justify-center px-3 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-700 border border-amber-200 whitespace-nowrap h-10 leading-tight">
+                                                <span className="opacity-80">Advance ₹</span>
+                                                <span className="font-semibold">{paidAmtRow.toFixed(2)}</span>
+                                              </span>
+                                            );
+                                          })()}
+                                          <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium border whitespace-nowrap h-7 ${soldBadges[(txn as any).id] ? 'bg-amber-100 text-amber-700 border-amber-200' : 'bg-muted text-foreground border-muted-foreground/20'}`}>
+                                            <span className="opacity-80">Status</span>
+                                            <span>{soldBadges[(txn as any).id] ? `Sold to ${soldBadges[(txn as any).id]}` : '—'}</span>
+                                          </span>
+                                          <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium border bg-violet-100 text-violet-700 border-violet-200 whitespace-nowrap h-7">
+                                            <span className="opacity-80">Flower</span>
+                                            <span>{(txn as any).flower_name || '—'}</span>
+                                          </span>
+                                          <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold border bg-blue-100 text-blue-700 border-blue-200 whitespace-nowrap h-7">
+                                            <span className="opacity-80">Net</span>
+                                            <span>+{Number(txn.kg_added).toFixed(2)} kg</span>
+                                          </span>
+                                          {/* Less chip removed from row view (shown in Update Details dialog) */}
+                                          <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold border bg-emerald-100 text-emerald-700 border-emerald-200 whitespace-nowrap h-7">
+                                            <span className="opacity-80">Amount</span>
+                                            <span>+₹{Number(txn.amount_added).toFixed(2)}</span>
+                                          </span>
+                                        </div>
+                                        <div className="inline-flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                            <Button
+                                              type="button"
+                                              variant="outline"
+                                              size="sm"
+                                              className="text-sm h-8 text-red-600 border-red-200 hover:text-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                              onClick={(e) => { 
+                                                e.stopPropagation(); 
+                                                const hasLinked = ((tablePayments[(seller as any).id] || []).some((p: any) => (p as any).transaction_id === (txn as any).id));
+                                                if (hasLinked) { try { toast.error?.('Cannot delete: advance/payment exists for this update'); } catch {} return; }
+                                                setDeletingTxnSeller(seller); setDeletingTxn(txn); try { toast.message?.('Confirm delete…'); } catch {} 
+                                              }}
+                                              disabled={(tablePayments[(seller as any).id] || []).some((p: any) => (p as any).transaction_id === (txn as any).id)}
+                                              title={((tablePayments[(seller as any).id] || []).some((p: any) => (p as any).transaction_id === (txn as any).id)) ? 'Cannot delete: advance/payment exists' : 'Delete this update'}
+                                            >
+                                              Delete
+                                            </Button>
+                                            <Button
+                                              type="button"
+                                              variant="outline"
+                                              size="sm"
+                                              className="text-sm h-8"
+                                              onClick={(e) => { e.stopPropagation(); setSelectedTxnSeller(seller); setSelectedTxn(txn); try { toast.message?.('Opening view…'); } catch {} }}
+                                            >
+                                              View
+                                            </Button>
+                                            <Button
+                                              type="button"
+                                              variant="outline"
+                                              size="sm"
+                                              className="text-sm h-8"
+                                              onClick={(e) => { e.stopPropagation(); setSalesSeller(seller); setSalesTxn(txn); setSalesPromptData({ name: '', number: '', address: '', weight: Number((txn as any).kg_added || 0), amount: Number((txn as any).amount_added || 0), full: true }); setSalesPromptOpen(true); }}
+                                              disabled={!!soldBadges[(txn as any).id]}
+                                            >
+                                              Sales
+                                            </Button>
+                                          </div>
+                                        </div>
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                              </React.Fragment>
+                            );
+                          })}
+                        </>
+                      );
+                    })()}
                   </React.Fragment>
                 ))}
               </TableBody>
@@ -1099,30 +1210,27 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
               if (salesSaving) return;
               if (!salesPromptData.name.trim()) { toast.error('Name is required'); return; }
               if (!salesSeller || !salesTxn) { toast.error('No update selected'); return; }
-              const kgVal = parseFloat(String((salesPromptData as any).weight || '0')) || 0;
-              const amtVal = parseFloat(String((salesPromptData as any).amount || '0')) || 0;
-              if (!(kgVal > 0) || !(amtVal > 0)) {
-                toast.error('Enter sell weight and amount greater than 0');
-                return;
-              }
               try {
                 setSalesSaving(true);
-                // Save to sale_to contacts table
+                // Save contact (optional convenience)
                 await sellerApi.addSaleToContact(salesSeller.id, {
                   name: salesPromptData.name.trim(),
                   mobile: (salesPromptData.number || '').trim() || undefined,
                   address: (salesPromptData.address || '').trim() || undefined,
                 });
-                // Create a Sold-To transaction to block the specified kg/amount
-                await sellerApi.addSoldToTransaction(salesSeller.id, {
-                  customer_name: salesPromptData.name.trim(),
-                  customer_mobile: (salesPromptData.number || '').trim() || undefined,
-                  sale_date: new Date().toISOString().slice(0, 10),
-                  kg_sold: kgVal,
-                  amount_sold: amtVal,
-                  notes: (salesPromptData.address || '').trim() ? `Address: ${salesPromptData.address?.trim()}` : undefined,
-                });
-                toast.success('Sale recorded and stock blocked');
+                // Only set status on this update (no stock movement)
+                await sellerApi.updateTransaction(
+                  (salesSeller as any).id,
+                  (salesTxn as any).id,
+                  {
+                    transaction_date: (salesTxn as any).transaction_date,
+                    amount_added: Number((salesTxn as any).amount_added),
+                    kg_added: Number((salesTxn as any).kg_added),
+                    flower_name: ((salesTxn as any).flower_name || '').trim() || undefined,
+                    salesman_name: salesPromptData.name.trim(),
+                  }
+                );
+                toast.success('Status updated');
                 // Mark this update row with a Sold to badge (and persist)
                 try {
                   const txnId = (salesTxn as any)?.id as string;
@@ -1135,9 +1243,11 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                   }
                 } catch {}
                 setSalesPromptOpen(false);
-                // refresh sale_to and sold-to transactions for this seller
+                // refresh contacts and transactions
                 try { const contacts = await sellerApi.getSaleToContacts(salesSeller.id); setSaleToForView(contacts || []); } catch {}
-                try { const so = await sellerApi.getSoldToTransactions(salesSeller.id); setTableSoldTo((prev) => ({ ...prev, [salesSeller.id]: so })); } catch {}
+                try { const txns = await sellerApi.getTransactions((salesSeller as any).id); setTableTransactions((prev) => ({ ...prev, [(salesSeller as any).id]: txns })); } catch {}
+                // refresh payments as well to keep Advance totals consistent
+                try { const pays = await sellerApi.getPayments((salesSeller as any).id); setTablePayments((prev) => ({ ...prev, [(salesSeller as any).id]: pays || [] })); } catch {}
               } catch (err: any) {
                 toast.error(err?.message || 'Failed to save');
               } finally {
@@ -1146,25 +1256,7 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
             }}
             className="space-y-3"
           >
-            {salesTxn && (
-              <div className="space-y-1 rounded border p-2 bg-muted/30">
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={!!(salesPromptData as any).full}
-                    onChange={(e) => {
-                      const full = e.target.checked;
-                      if (full) {
-                        setSalesPromptData({ ...salesPromptData, full: true, weight: Number((salesTxn as any).kg_added || 0), amount: Number((salesTxn as any).amount_added || 0) });
-                      } else {
-                        setSalesPromptData({ ...salesPromptData, full: false });
-                      }
-                    }}
-                  />
-                  <span>Sell entire update ({Number((salesTxn as any).kg_added || 0).toFixed(2)} kg · ₹{Number((salesTxn as any).amount_added || 0).toFixed(2)})</span>
-                </label>
-              </div>
-            )}
+            {/* Only capture the name (status). No stock checks, no amounts. */}
             <div className="space-y-2">
               <Label>Name<span className="text-red-500">*</span></Label>
               <Input value={salesPromptData.name} onChange={(e) => setSalesPromptData({ ...salesPromptData, name: e.target.value })} required />
@@ -1177,37 +1269,116 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
               <Label>Address (optional)</Label>
               <Textarea value={salesPromptData.address || ''} onChange={(e) => setSalesPromptData({ ...salesPromptData, address: e.target.value })} rows={3} />
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-2">
-                <Label>Sell Weight (kg)</Label>
-                <Input
-                  type="number"
-                  step="0.01"
-                  min="0.01"
-                  value={(salesPromptData as any).weight ?? ''}
-                  onChange={(e) => setSalesPromptData({ ...salesPromptData, weight: parseFloat(e.target.value || '0') })}
-                  disabled={!!(salesPromptData as any).full}
-                  placeholder="e.g., 5"
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Sell Amount (₹)</Label>
-                <Input
-                  type="number"
-                  step="0.01"
-                  min="0.01"
-                  value={(salesPromptData as any).amount ?? ''}
-                  onChange={(e) => setSalesPromptData({ ...salesPromptData, amount: parseFloat(e.target.value || '0') })}
-                  disabled={!!(salesPromptData as any).full}
-                  placeholder="e.g., 500"
-                  required
-                />
-              </div>
-            </div>
             <div className="flex justify-end gap-2 pt-2">
               <Button type="button" variant="outline" onClick={() => setSalesPromptOpen(false)} disabled={salesSaving}>Cancel</Button>
               <Button type="submit" disabled={salesSaving}>{salesSaving ? 'Saving...' : 'Save'}</Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Advance Payment Dialog */}
+      <Dialog open={advanceOpen} onOpenChange={(open) => {
+        setAdvanceOpen(open);
+        if (!open) {
+          setAdvanceSeller(null);
+          setAdvanceAmount('');
+          setAdvanceNotes('');
+          setAdvanceDate('');
+          setAdvanceTxnId(null);
+        } else {
+          // Default the date to the latest transaction date for this seller, else today
+          try {
+            const sid = (advanceSeller as any)?.id as string | undefined;
+            const txns = sid ? (tableTransactions[sid] || []) : [];
+            const latest = txns.slice().sort((a: any, b: any) => new Date(b.transaction_date || b.created_at).getTime() - new Date(a.transaction_date || a.created_at).getTime())[0];
+            const def = latest ? toYMD((latest as any).transaction_date || (latest as any).created_at) : new Date().toISOString().slice(0, 10);
+            setAdvanceDate(def);
+          } catch {
+            setAdvanceDate(new Date().toISOString().slice(0, 10));
+          }
+        }
+      }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add Advance Payment</DialogTitle>
+          </DialogHeader>
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (advanceSaving) return;
+              const amt = parseFloat(advanceAmount || '');
+              if (!(amt >= 0)) { toast.error('Enter advance amount (0 or more)'); return; }
+              if (!advanceDate) { toast.error('Select a date for the advance'); return; }
+              if (!advanceSeller) { toast.error('No seller selected'); return; }
+              try {
+                setAdvanceSaving(true);
+                // Overwrite behavior: post only the difference so total equals edited amount
+                const diff = amt - (advanceExistingAmt || 0);
+                if (Math.abs(diff) < 0.000001) {
+                  setAdvanceOpen(false);
+                  setAdvanceSaving(false);
+                  return;
+                }
+                await sellerApi.addPayment(advanceSeller.id, ({
+                  amount: diff,
+                  cleared_kg: 0,
+                  from_date: advanceDate,
+                  to_date: advanceDate,
+                  transaction_id: advanceTxnId || undefined,
+                  notes: advanceNotes || undefined,
+                } as any));
+                toast.success('Advance recorded');
+                // Refresh table payments for this seller
+                try {
+                  const pays = await sellerApi.getPayments(advanceSeller.id);
+                  setTablePayments((prev) => ({ ...prev, [advanceSeller.id]: pays || [] }));
+                } catch {}
+                // Notify and close
+                setAdvanceOpen(false);
+              } catch (err: any) {
+                toast.error(err?.message || 'Failed to save advance');
+              } finally {
+                setAdvanceSaving(false);
+              }
+            }}
+            className="space-y-3"
+          >
+            {advanceSeller && (
+              <div className="text-sm text-muted-foreground">Seller: <span className="font-medium">{advanceSeller.serial_number} · {advanceSeller.name}</span></div>
+            )}
+            <div className="space-y-1">
+              <Label>Date *</Label>
+              <Input
+                type="date"
+                value={advanceDate}
+                onChange={(e) => setAdvanceDate(e.target.value)}
+                required
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>Advance Amount (₹)</Label>
+              <Input
+                type="number"
+                step="0.01"
+                min="0.01"
+                value={advanceAmount}
+                onChange={(e) => setAdvanceAmount(e.target.value)}
+                placeholder="Enter advance amount"
+                required
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>Notes (optional)</Label>
+              <Textarea
+                value={advanceNotes}
+                onChange={(e) => setAdvanceNotes(e.target.value)}
+                placeholder="Any notes"
+              />
+            </div>
+            <div className="flex gap-2 pt-1">
+              <Button type="submit" disabled={advanceSaving}>{advanceSaving ? 'Saving…' : 'Save Advance'}</Button>
+              <Button type="button" variant="outline" onClick={() => setAdvanceOpen(false)}>Cancel</Button>
             </div>
           </form>
         </DialogContent>
@@ -1263,7 +1434,7 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
           { kg: 0, amt: 0 }
         );
 
-        // Sum payments across all sellers since clear (subtract from purchases total)
+        // Sum payments across all sellers since clear (used for Advance tile)
         const paid = sellers.reduce(
           (acc, s) => {
             const pays = tablePayments[s.id] || [];
@@ -1279,10 +1450,159 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
           { kg: 0, amt: 0 }
         );
 
-        const netPurchases = {
-          kg: Math.max(0, recv.kg - paid.kg),
-          amt: Math.max(0, recv.amt - paid.amt),
+        // Only show Advance tile for payments linked to visible transactions (transaction_id match)
+        const allTxnIds = new Set<string>();
+        for (const s2 of sellers) {
+          for (const t of (tableTransactions[s2.id] || [])) {
+            const id = String((t as any).id || '');
+            if (id) allTxnIds.add(id);
+          }
+        }
+        const linkedPaid = sellers.reduce(
+          (acc, s) => {
+            const pays = tablePayments[s.id] || [];
+            for (const p of pays) {
+              const tid = String((p as any).transaction_id || '');
+              if (tid && allTxnIds.has(tid)) {
+                acc.kg += Number((p as any).cleared_kg || 0);
+                acc.amt += Number((p as any).amount || 0);
+              }
+            }
+            return acc;
+          },
+          { kg: 0, amt: 0 }
+        );
+
+        // Show ONLY unpaid data: exclude transactions that are truly linked to a payment
+        // via explicit transaction_id links. No date-range clearing here.
+        const isTxnCleared = (sellerId: string, ymd: string, txnId: string): boolean => {
+          const pays = tablePayments[sellerId] || [];
+          for (const p of pays) {
+            // New shape: payment has a transactions array
+            const arr = (p as any)?.transactions;
+            if (Array.isArray(arr) && arr.length > 0) {
+              const hit = arr.some((it: any) => String(it?.transaction_id || '') === txnId && Number(it?.cleared_kg || 0) > 0);
+              if (hit) return true;
+            }
+            // Legacy shape: single transaction_id on payment
+            const linkedTid = String((p as any).transaction_id || '');
+            const clearedKg = Number((p as any).cleared_kg || 0);
+            if (linkedTid && txnId && linkedTid === txnId && clearedKg > 0) return true;
+            // Range fallback: if no explicit links, but From..To includes this txn date and cleared_kg > 0, treat as cleared
+            if (!Array.isArray(arr) || (Array.isArray(arr) && arr.length === 0)) {
+              const fRaw = (p as any).from_date;
+              const tRaw = (p as any).to_date;
+              if (fRaw && tRaw && clearedKg > 0) {
+                const f = toYMD(fRaw);
+                const t = toYMD(tRaw);
+                const y = ymd || '';
+                if (f && t && y >= f && y <= t) return true;
+              }
+            }
+          }
+          return false;
         };
+
+        // Fallback: treat as cleared if there is a local cached receipt OR local cleared-days cache
+        // (immediate UI zero-after-pay, persists 24h; no backend change needed)
+        const hasLocalCleared = (sellerId: string, ymd: string): boolean => {
+          try {
+            // New: payments_cleared_days
+            const rawDays = localStorage.getItem('payments_cleared_days');
+            if (rawDays) {
+              const obj = JSON.parse(rawDays) || {};
+              const bucket = obj[String(sellerId)] || {};
+              const ts = bucket[ymd];
+              if (ts && (Date.now() - Number(ts) <= 24*60*60*1000)) return true;
+            }
+          } catch {}
+          try {
+            // Legacy: payments_receipt_cache keyed by seller|from|to; we only have day key so we store same day in both from/to
+            const raw = localStorage.getItem('payments_receipt_cache');
+            if (!raw) return false;
+            const cache = JSON.parse(raw) || {};
+            const key = `${sellerId}|${ymd}|${ymd}`;
+            const item = cache[key];
+            if (!item) return false;
+            if (item.ts && Date.now() - Number(item.ts) > 24*60*60*1000) return false;
+            return true;
+          } catch { return false; }
+        };
+        // If the search shows exactly one seller, compute Purchases Total ONLY for that seller.
+        // Otherwise (multiple sellers), keep combined behavior.
+        const scope = sellers && sellers.length === 1 ? [sellers[0]] : sellers;
+
+        // Recompute remaining purchases: only include txns not covered by any payment range
+        // Also collect the remaining transaction IDs so we only count advances linked to remaining items
+        const remainingTxnIds = new Set<string>();
+        const remainingTxnYmd = new Map<string, string>();
+        const remainingYmdSet = new Set<string>();
+        const rem = scope.reduce(
+          (acc, s) => {
+            const txns = tableTransactions[s.id] || [];
+            for (const t of txns) {
+              const ymd = toYMD((t as any).transaction_date);
+              const tid = String((t as any).id || '');
+              if (isTxnCleared(s.id, ymd, tid) || hasLocalCleared(s.id, ymd)) continue; // already cleared by payment or cached receipt
+              acc.kg += Number((t as any).kg_added || 0);
+              acc.amt += Number((t as any).amount_added || 0);
+              if (tid) {
+                remainingTxnIds.add(tid);
+                remainingTxnYmd.set(tid, ymd);
+              }
+              if (ymd) remainingYmdSet.add(ymd);
+            }
+            return acc;
+          },
+          { kg: 0, amt: 0 }
+        );
+        const purchasesDisplay = {
+          kg: Math.max(0, rem.kg),
+          amt: Math.max(0, rem.amt),
+        };
+        // Advance: payments since clear AND linked to remaining (unpaid) transactions only
+        let advanceSinceClearLinked = 0;
+        for (const s2 of scope) {
+          const pays = tablePayments[s2.id] || [];
+          for (const p of pays) {
+            const ts = new Date((p as any).paid_at).getTime();
+            // New shape: payment has an array of linked transactions
+            const arr = (p as any)?.transactions;
+            if (Array.isArray(arr) && arr.length > 0) {
+              const anyLinked = arr.some((it: any) => remainingTxnIds.has(String(it?.transaction_id || '')));
+              if (anyLinked && (!clearedAt || ts > clearedAt)) {
+                advanceSinceClearLinked += Number((p as any).amount || 0);
+              }
+              continue;
+            }
+            // Legacy: single linked transaction_id
+            const tid = String((p as any).transaction_id || '');
+            if (tid && remainingTxnIds.has(tid) && (!clearedAt || ts > clearedAt)) {
+              advanceSinceClearLinked += Number((p as any).amount || 0);
+              continue;
+            }
+            // Range fallback: if payment has no explicit links, count its advance only when
+            // at least one remaining txn date falls within the payment From..To window
+            const fRaw = (p as any).from_date;
+            const tRaw = (p as any).to_date;
+            const clearedKg = Number((p as any).cleared_kg || 0);
+            if (fRaw && tRaw && clearedKg >= 0) {
+              const f = toYMD(fRaw);
+              const t = toYMD(tRaw);
+              if (f && t) {
+                let overlaps = false;
+                for (const ymd of remainingYmdSet) { if (ymd >= f && ymd <= t) { overlaps = true; break; } }
+                if (overlaps && (!clearedAt || ts > clearedAt)) {
+                  advanceSinceClearLinked += Number((p as any).amount || 0);
+                }
+              }
+            }
+          }
+        }
+        // If nothing remains unpaid, advance display should be 0
+        const advanceDisplay = (purchasesDisplay.kg === 0 && purchasesDisplay.amt === 0)
+          ? 0
+          : Math.max(0, advanceSinceClearLinked);
 
         if (recv.kg === 0 && recv.amt === 0 && sales.kg === 0 && sales.amt === 0) {
           return null;
@@ -1298,17 +1618,21 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                   ) : null}
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-2 text-center">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-center">
                 <div className="bg-blue-50 dark:bg-blue-950 rounded p-3 shadow-sm">
                   <p className="text-sm text-muted-foreground mb-1">Weight</p>
-                  <p className="text-2xl font-bold text-blue-600">{netPurchases.kg.toFixed(2)} kg</p>
+                  <p className="text-2xl font-bold text-blue-600">{purchasesDisplay.kg.toFixed(2)} kg</p>
                 </div>
                 <div className="bg-blue-50 dark:bg-blue-950 rounded p-3 shadow-sm">
                   <p className="text-sm text-muted-foreground mb-1">Amount</p>
-                  <p className="text-2xl font-bold text-blue-600">₹{netPurchases.amt.toFixed(2)}</p>
+                  <p className="text-2xl font-bold text-blue-600">₹{purchasesDisplay.amt.toFixed(2)}</p>
+                </div>
+                <div className="bg-amber-50 dark:bg-amber-950 rounded p-3 shadow-sm">
+                  <p className="text-sm text-muted-foreground mb-1">Advance</p>
+                  <p className="text-2xl font-bold text-amber-700">₹{advanceDisplay.toFixed(2)}</p>
                 </div>
               </div>
-              <p className="mt-2 text-[11px] text-muted-foreground">Paid since clear: -{paid.kg.toFixed(2)} kg · -₹{paid.amt.toFixed(2)}</p>
+              {/* Advances intentionally not shown in Purchases Total */}
               {viewingSeller ? (
                 <div className="mt-3 text-sm text-muted-foreground">
                   <span className="font-medium">Serial:</span> {viewingSeller.serial_number} · <span className="font-medium">Seller:</span> {viewingSeller.name}
@@ -1379,156 +1703,159 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
 
       {/* Single update dialog (only this purchase entry) */}
       <Dialog open={!!selectedTxn} onOpenChange={() => { setSelectedTxn(null); setSelectedTxnSeller(null); }}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-xl">
           <DialogHeader>
             <DialogTitle>Update Details - {selectedTxnSeller?.name}</DialogTitle>
           </DialogHeader>
           {selectedTxn && (
             <div className="space-y-3">
-              <div className="border rounded p-3">
-                <div className="flex justify-between items-start mb-2">
-                  <div>
-                    <p className="text-xs text-muted-foreground">Date</p>
-                    <p className="text-sm font-semibold">{new Date(selectedTxn.transaction_date).toLocaleDateString()}</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-xs text-muted-foreground">Added</p>
-                    <p className="text-sm font-semibold text-blue-600">+{Number(selectedTxn.kg_added).toFixed(2)} kg</p>
-                    <p className="text-sm font-semibold text-green-600">+₹{Number(selectedTxn.amount_added).toFixed(2)}</p>
-                  </div>
-                </div>
-                <div className="flex justify-between text-xs text-muted-foreground">
-                  <span>Previous: {Number(selectedTxn.previous_kg).toFixed(2)} kg, ₹{Number(selectedTxn.previous_amount).toFixed(2)}</span>
-                  <span className="font-semibold text-foreground">Total: {Number(selectedTxn.new_total_kg).toFixed(2)} kg, ₹{Number(selectedTxn.new_total_amount).toFixed(2)}</span>
-                </div>
-                {(selectedTxn as any).flower_name ? (
-                  <div className="mt-1 text-xs">
-                    <span className="font-semibold text-foreground">Flower:</span> <span className="font-semibold text-foreground">{ (selectedTxn as any).flower_name }</span>
-                  </div>
-                ) : null}
-              </div>
-
-              {/* Sale (Sold To) for this purchase date only */}
-              <div className="border rounded p-3">
-                <h4 className="text-sm font-semibold mb-2">Sale (Sold To) for this date</h4>
-                {(() => {
-                  const sid = (selectedTxnSeller as any)?.id;
-                  // Prefer the most up-to-date list fetched for the viewing seller
-                  const all = (sid && viewingSeller && viewingSeller.id === sid
-                    ? (viewingSoldTo || [])
-                    : (tableSoldTo[sid] || [])
-                  ).slice();
-                  const toYMD = (v: any) => {
-                    const s = String(v || '').trim();
-                    if (!s) return '';
-                    // ISO YYYY-MM-DD
-                    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
-                    // DMY DD/MM/YYYY
-                    const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-                    if (m) { const [_, dd, mm, yyyy] = m; return `${yyyy}-${mm}-${dd}`; }
-                    const d = new Date(s);
-                    return isNaN(d.getTime()) ? s : d.toISOString().slice(0, 10);
-                  };
-                  const purchaseDateKey = toYMD((selectedTxn as any).transaction_date || (selectedTxn as any).created_at);
-                  // Create local day window [start, end] for robust matching
-                  const [y, m, d] = purchaseDateKey.split('-').map(Number);
-                  const dayStart = y && m && d ? new Date(y, m - 1, d, 0, 0, 0, 0) : null;
-                  const dayEnd = y && m && d ? new Date(y, m - 1, d, 23, 59, 59, 999) : null;
-                  const parseToDate = (val: any) => {
-                    const key = toYMD(val);
-                    const [yy, mm, dd] = key.split('-').map(Number);
-                    return yy && mm && dd ? new Date(yy, mm - 1, dd, 12, 0, 0, 0) : new Date(NaN);
-                  };
-                  const daySales = all
-                    .filter((s: any) => {
-                      if (!dayStart || !dayEnd) return false;
-                      const sd = parseToDate((s as any).sale_date || (s as any).created_at);
-                      return sd >= dayStart && sd <= dayEnd;
-                    })
-                    .sort((a: any, b: any) => new Date(b.created_at || b.sale_date).getTime() - new Date(a.created_at || a.sale_date).getTime());
-
-                  // Prefer assigned person from badge or txn.salesman_name
-                  const txnId = (selectedTxn as any)?.id as string;
-                  const assignedNameRaw = (txnId ? String((soldBadges as any)[txnId] || '').trim() : '')
-                    || String((selectedTxn as any).salesman_name || '').trim();
-                  const assignedName = assignedNameRaw.toLowerCase();
-
-                  if (assignedName) {
-                    const matchByName = daySales.find((s: any) => String((s as any).customer_name || '').trim().toLowerCase() === assignedName);
-                    if (matchByName) {
-                      const sale = matchByName;
-                      return (
-                        <div className="space-y-2">
-                          <div className="border rounded p-2 bg-muted/30">
-                            <div className="flex justify-between items-start">
-                              <div>
-                                <p className="text-xs font-medium">{sale.customer_name}</p>
-                                <p className="text-[11px] text-muted-foreground">{new Date(sale.sale_date).toLocaleDateString()}</p>
-                              </div>
-                              <div className="text-right text-xs">
-                                <p className="font-semibold text-emerald-600">{Number(sale.kg_sold).toFixed(2)} kg</p>
-                                <p className="font-semibold text-emerald-600">₹{Number(sale.amount_sold).toFixed(2)}</p>
-                              </div>
-                            </div>
-                            <div className="mt-1 flex justify-between text-[11px] text-muted-foreground">
-                              <span>Had: {Number(sale.previous_kg).toFixed(2)} kg, ₹{Number(sale.previous_amount).toFixed(2)}</span>
-                              <span className="text-foreground">Remaining: {Number(sale.remaining_kg).toFixed(2)} kg, ₹{Number(sale.remaining_amount).toFixed(2)}</span>
-                            </div>
-                            {sale.notes && <p className="mt-1 text-[11px] italic text-muted-foreground">Note: {sale.notes}</p>}
-                          </div>
-                        </div>
-                      );
-                    }
-                    // Nothing recorded for that person on this date: still show assigned name
-                    const dateLabel = new Date(purchaseDateKey).toLocaleDateString();
-                    return (
-                      <div className="space-y-2">
-                        <div className="border rounded p-2 bg-muted/30">
-                          <div className="flex justify-between items-start">
-                            <div>
-                              <p className="text-xs font-medium">{assignedNameRaw}</p>
-                              <p className="text-[11px] text-muted-foreground">{dateLabel}</p>
-                            </div>
-                            <div className="text-right text-xs">
-                              <p className="text-muted-foreground">No recorded sale on this date</p>
-                            </div>
-                          </div>
-                        </div>
+              {selectedTxnSeller && (
+                <div className="rounded-lg border bg-muted/30 px-4 py-3 text-sm">
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                    <div>
+                      <span className="text-muted-foreground">Seller:</span> <span className="font-semibold">{selectedTxnSeller.name}</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Serial:</span> <span className="font-medium">{selectedTxnSeller.serial_number}</span>
+                    </div>
+                    {selectedTxnSeller.mobile ? (
+                      <div>
+                        <span className="text-muted-foreground">Mobile:</span> <span className="font-medium">{selectedTxnSeller.mobile}</span>
                       </div>
-                    );
+                    ) : null}
+                  </div>
+                  {selectedTxnSeller.address ? (
+                    <div className="mt-1 text-[12px] text-muted-foreground truncate">{selectedTxnSeller.address}</div>
+                  ) : null}
+                </div>
+              )}
+              {(() => {
+                const dateKey = toYMD((selectedTxn as any).transaction_date || (selectedTxn as any).created_at);
+                const pays = (selectedTxnSeller && tablePayments[(selectedTxnSeller as any).id]) || [];
+                const paidAmt = pays.reduce((s: number, p: any) => {
+                  const amtNum = Number(String((p as any).amount ?? 0).toString().replace(/[^0-9.-]/g, '')) || 0;
+                  const fdK = toYMD((p as any).from_date);
+                  const tdK = toYMD((p as any).to_date);
+                  const paK = toYMD((p as any).paid_at);
+                  if (fdK && tdK) {
+                    return (dateKey >= fdK && dateKey <= tdK) ? s + amtNum : s;
                   }
-
-                  if (daySales.length === 0) {
-                    return <p className="text-xs text-muted-foreground">No sales for this date</p>;
-                  }
-
-                  // Fallback: show latest sale on this date
-                  const sale = daySales[0];
-                  return (
-                    <div className="space-y-2">
-                      <div className="border rounded p-2 bg-muted/30">
-                        <div className="flex justify-between items-start">
-                          <div>
-                            <p className="text-xs font-medium">{sale.customer_name || 'Unknown customer'}</p>
-                            <p className="text-[11px] text-muted-foreground">{new Date(sale.sale_date).toLocaleDateString()}</p>
-                          </div>
-                          <div className="text-right text-xs">
-                            <p className="font-semibold text-emerald-600">{Number(sale.kg_sold).toFixed(2)} kg</p>
-                            <p className="font-semibold text-emerald-600">₹{Number(sale.amount_sold).toFixed(2)}</p>
-                          </div>
-                        </div>
-                        <div className="mt-1 flex justify-between text-[11px] text-muted-foreground">
-                          <span>Had: {Number(sale.previous_kg).toFixed(2)} kg, ₹{Number(sale.previous_amount).toFixed(2)}</span>
-                          <span className="text-foreground">Remaining: {Number(sale.remaining_kg).toFixed(2)} kg, ₹{Number(sale.remaining_amount).toFixed(2)}</span>
-                        </div>
-                        {sale.notes && <p className="mt-1 text-[11px] italic text-muted-foreground">Note: {sale.notes}</p>}
+                  return (paK && paK === dateKey) ? s + amtNum : s;
+                }, 0);
+                const statusName = (() => {
+                  const id = (selectedTxn as any)?.id as string;
+                  const badge = (soldBadges as any)[id];
+                  const serverName = (selectedTxn as any).salesman_name;
+                  return String(badge || serverName || '').trim();
+                })();
+                const displayDate = (() => { const [y,m,d] = dateKey.split('-'); return `${d}/${m}/${y}`; })();
+                const less = Number((selectedTxn as any).less_weight || 0);
+                const netKg = Number((selectedTxn as any).kg_added || 0);
+                const effKg = Math.max(0, netKg - less);
+                const amt = Number((selectedTxn as any).amount_added || 0);
+                const rate = effKg > 0 ? amt / effKg : 0;
+                return (
+                  <div className="rounded-xl border bg-card p-4 shadow-sm">
+                    <div className="mt-1 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {/* Date & Flower */}
+                      <div className="flex items-center justify-between rounded-lg border bg-muted/30 px-3 py-2">
+                        <span className="text-sm text-muted-foreground">Date</span>
+                        <span className="text-sm font-medium">{displayDate}</span>
+                      </div>
+                      <div className="flex items-center justify-between rounded-lg border bg-muted/30 px-3 py-2">
+                        <span className="text-sm text-muted-foreground">Flower</span>
+                        <span className="px-2 py-0.5 rounded-full text-xs font-medium border bg-violet-100 text-violet-700 border-violet-200">{(selectedTxn as any).flower_name || '—'}</span>
+                      </div>
+                      {/* Net & Less */}
+                      <div className="flex items-center justify-between rounded-lg border bg-muted/30 px-3 py-2">
+                        <span className="text-sm text-muted-foreground">Net Weight (kg)</span>
+                        <span className="px-2 py-0.5 rounded-full text-xs font-semibold border bg-blue-100 text-blue-700 border-blue-200">+{netKg.toFixed(2)} kg</span>
+                      </div>
+                      <div className="flex items-center justify-between rounded-lg border bg-muted/30 px-3 py-2">
+                        <span className="text-sm text-muted-foreground">Less Weight (kg)</span>
+                        {less > 0 ? (
+                          <span className="px-2 py-0.5 rounded-full text-xs font-semibold border bg-blue-50 text-blue-700 border-blue-200">-{less.toFixed(2)} kg</span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full text-xs font-medium border bg-muted text-foreground border-muted-foreground/20">—</span>
+                        )}
+                      </div>
+                      {/* Rate & Amount */}
+                      <div className="flex items-center justify-between rounded-lg border bg-muted/30 px-3 py-2">
+                        <span className="text-sm text-muted-foreground">Rate (₹/kg)</span>
+                        <span className="px-2 py-0.5 rounded-full text-xs font-semibold border bg-zinc-100 text-foreground border-zinc-200">{effKg > 0 ? `₹${rate.toFixed(2)}` : '—'}</span>
+                      </div>
+                      <div className="flex items-center justify-between rounded-lg border bg-muted/30 px-3 py-2">
+                        <span className="text-sm text-muted-foreground">Amount (₹)</span>
+                        <span className="px-2 py-0.5 rounded-full text-xs font-semibold border bg-emerald-100 text-emerald-700 border-emerald-200">+₹{amt.toFixed(2)}</span>
                       </div>
                     </div>
-                  );
-                })()}
-              </div>
+                    {/* Advance */}
+                    <div className="mt-3 flex items-center justify-end gap-2">
+                      <span className="text-sm text-muted-foreground">Advance Paid</span>
+                      {(() => {
+                        const pays = (selectedTxnSeller && tablePayments[(selectedTxnSeller as any).id]) || [];
+                        const perRow = (pays || []).reduce((s: number, p: any) => {
+                          const amtNum = Number(String((p as any).amount ?? 0).toString().replace(/[^0-9.-]/g, '')) || 0;
+                          const tid = (p as any).transaction_id;
+                          if (tid && tid === (selectedTxn as any).id) return s + amtNum;
+                          const fdK = toYMD((p as any).from_date);
+                          const tdK = toYMD((p as any).to_date);
+                          const paK = toYMD((p as any).paid_at);
+                          const k = toYMD((selectedTxn as any).transaction_date || (selectedTxn as any).created_at);
+                          if (fdK && tdK) return (k >= fdK && k <= tdK) ? s + amtNum : s;
+                          return (paK && paK === k) ? s + amtNum : s;
+                        }, 0);
+                        return <span className="px-3 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200 shadow-inner">₹{perRow.toFixed(2)}</span>;
+                      })()}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          try {
+                            if (selectedTxnSeller) setAdvanceSeller(selectedTxnSeller as any);
+                            const k = toYMD((selectedTxn as any).transaction_date || (selectedTxn as any).created_at);
+                            setAdvanceDate(k);
+                            // compute existing per-row advance
+                            const pays = (selectedTxnSeller && tablePayments[(selectedTxnSeller as any).id]) || [];
+                            const perRow = (pays || []).reduce((s: number, p: any) => {
+                              const amtNum = Number(String((p as any).amount ?? 0).toString().replace(/[^0-9.-]/g, '')) || 0;
+                              const tid = (p as any).transaction_id;
+                              if (tid && tid === (selectedTxn as any).id) return s + amtNum;
+                              const fdK = toYMD((p as any).from_date);
+                              const tdK = toYMD((p as any).to_date);
+                              const paK = toYMD((p as any).paid_at);
+                              if (fdK && tdK) return (k >= fdK && k <= tdK) ? s + amtNum : s;
+                              return (paK && paK === k) ? s + amtNum : s;
+                            }, 0);
+                            setAdvanceExistingAmt(perRow);
+                            setAdvanceAmount(perRow > 0 ? perRow.toFixed(2) : '');
+                            setAdvanceTxnId((selectedTxn as any)?.id || null);
+                            setAdvanceOpen(true);
+                          } catch {
+                            setAdvanceOpen(true);
+                          }
+                        }}
+                      >
+                        Edit Advance
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })()}
 
-              <div className="flex justify-end">
+              <div className="flex justify-end gap-2">
+                <Button
+                  onClick={() => {
+                    if (selectedTxn && selectedTxnSeller) {
+                      setEditingTxnSeller(selectedTxnSeller);
+                      setEditingTxn(selectedTxn);
+                    }
+                    setSelectedTxn(null);
+                    setSelectedTxnSeller(null);
+                  }}
+                >
+                  Edit
+                </Button>
                 <Button variant="outline" onClick={() => { setSelectedTxn(null); setSelectedTxnSeller(null); }}>Close</Button>
               </div>
             </div>
@@ -1792,7 +2119,7 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
 
       {/* Add Data: only Amount and Weight, others blocked */}
       <Dialog open={!!addDataSeller} onOpenChange={() => { setAddDataSeller(null); setOriginalSeller(null); setIsCreatingNew(false); setAddMode('receive'); setSoldToSeller(null); }}>
-        <DialogContent className="max-w-xl">
+        <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{isCreatingNew ? "Add New Seller" : "Add Data to Seller"}</DialogTitle>
           </DialogHeader>
@@ -1857,59 +2184,40 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                 {/* Editable fields */}
                 {
                   <>
-                    <div className="space-y-2">
-                      <Label>Date *</Label>
-                      <Input
-                        type="date"
-                        value={addDataSeller.date}
-                        onChange={(e) => setAddDataSeller({ ...addDataSeller, date: e.target.value })}
-                        required
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Weight (kg) *</Label>
-                      <Input
-                        type="number"
-                        step="0.01"
-                        min="0.01"
-                        value={addDataSeller.kg === 0 ? '' : addDataSeller.kg}
-                        onChange={(e) => setAddDataSeller({ ...addDataSeller, kg: parseFloat(e.target.value) || 0 })}
-                        required
-                        placeholder="Enter weight to add"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Amount (₹) *</Label>
-                      <Input
-                        type="number"
-                        step="0.01"
-                        min="0.01"
-                        value={addDataSeller.amount === 0 ? '' : addDataSeller.amount}
-                        onChange={(e) => setAddDataSeller({ ...addDataSeller, amount: parseFloat(e.target.value) || 0 })}
-                        required
-                        placeholder="Enter amount to add"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Flower</Label>
-                      <select
-                        className="w-full h-10 rounded-md border px-3 bg-background"
-                        value={flowerChoice}
-                        onChange={(e) => setFlowerChoice(e.target.value)}
-                        aria-label="Flower"
-                        title="Flower"
-                      >
-                        <option value="">Select flower</option>
-                        <option value="Rose">Rose</option>
-                        <option value="Sent yellow">Sent yellow</option>
-                        <option value="Sent white">Sent white</option>
-                        <option value="Chocolate">Chocolate</option>
-                        <option value="Ishwarya">Ishwarya</option>
-                        <option value="Others">Others</option>
-                      </select>
+                    {/* Date + Flower row */}
+                    <div className="space-y-2 md:col-span-2">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div className="space-y-2">
+                          <Label>Date *</Label>
+                          <Input
+                            type="date"
+                            value={addDataSeller.date}
+                            onChange={(e) => setAddDataSeller({ ...addDataSeller, date: e.target.value })}
+                            required
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Flower</Label>
+                          <select
+                            className="w-full h-10 rounded-md border px-3 bg-background"
+                            value={flowerChoice}
+                            onChange={(e) => setFlowerChoice(e.target.value)}
+                            aria-label="Flower"
+                            title="Flower"
+                          >
+                            <option value="">Select flower</option>
+                            <option value="Rose">Rose</option>
+                            <option value="Sent yellow">Sent yellow</option>
+                            <option value="Sent white">Sent white</option>
+                            <option value="Chocolate">Chocolate</option>
+                            <option value="Ishwarya">Ishwarya</option>
+                            <option value="Others">Others</option>
+                          </select>
+                        </div>
+                      </div>
                     </div>
                     {flowerChoice === 'Others' && (
-                      <div className="space-y-2">
+                      <div className="space-y-2 md:col-span-2">
                         <Label>Other flower</Label>
                         <Input
                           placeholder="Type flower name"
@@ -1918,6 +2226,146 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                         />
                       </div>
                     )}
+
+                    {/* Net/Less weight row */}
+                    <div className="space-y-2 md:col-span-2">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div className="space-y-2">
+                          <Label>Net Weight (kg) *</Label>
+                          <Input
+                            type="number"
+                            step="0.01"
+                            min="0.01"
+                            value={addDataSeller.kg === 0 ? '' : addDataSeller.kg}
+                            onChange={(e) => {
+                              const kgVal = parseFloat(e.target.value);
+                              const newKg = isNaN(kgVal) ? 0 : kgVal;
+                              // Compute auto amount if not manually edited
+                              let nextAmount = addDataSeller.amount;
+                              if (!amountEdited) {
+                                const less = Number(minusKg || 0);
+                                const eff = Math.max(0, newKg - less);
+                                const rate = Number(ratePerKg || 0);
+                                if (rate > 0) {
+                                  nextAmount = Math.round(eff * rate * 100) / 100;
+                                }
+                              }
+                              setAddDataSeller({ ...addDataSeller, kg: newKg, amount: nextAmount });
+                            }}
+                            required
+                            placeholder="Enter weight to add"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Less Weight (kg)</Label>
+                          <Input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={minusKg}
+                            onChange={(e) => {
+                              const v = parseFloat(e.target.value);
+                              const nextLess = isNaN(v) ? '' : v;
+                              setMinusKg(nextLess);
+                              // Auto update amount if not manually edited
+                              if (!amountEdited) {
+                                const net = Number(addDataSeller.kg || 0);
+                                const less = Number(nextLess || 0);
+                                const eff = Math.max(0, net - less);
+                                const rate = Number(ratePerKg || 0);
+                                if (rate > 0) {
+                                  const total = Math.round(eff * rate * 100) / 100;
+                                  setAddDataSeller({ ...addDataSeller, amount: total });
+                                }
+                              }
+                            }}
+                            placeholder="Enter weight to subtract"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Rate and Calculated Amount helper (UI-only) */}
+                    <div className="space-y-2 md:col-span-2">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div className="space-y-2">
+                          <Label>Rate (₹/kg)</Label>
+                          <Input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={ratePerKg === '' ? '' : ratePerKg}
+                            onChange={(e) => {
+                              const v = parseFloat(e.target.value);
+                              const nextRate = isNaN(v) ? '' : v;
+                              setRatePerKg(nextRate);
+                              // Auto update amount if not manually edited
+                              if (!amountEdited) {
+                                const net = Number(addDataSeller.kg || 0);
+                                const less = Number(minusKg || 0);
+                                const eff = Math.max(0, net - less);
+                                const rate = Number(nextRate || 0);
+                                if (rate > 0) {
+                                  const total = Math.round(eff * rate * 100) / 100;
+                                  setAddDataSeller({ ...addDataSeller, amount: total });
+                                }
+                              }
+                            }}
+                            placeholder="Enter rate per kg"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Calculated Amount (₹)</Label>
+                          {(() => {
+                            const net = Number(addDataSeller.kg || 0);
+                            const less = Number(minusKg || 0);
+                            const eff = Math.max(0, net - less);
+                            const rate = Number(ratePerKg || 0);
+                            const total = eff * rate;
+                            return (
+                              <Input
+                                readOnly
+                                value={rate > 0 ? `${eff.toFixed(2)} × ${rate.toFixed(2)} = ₹${total.toFixed(2)}` : `${eff.toFixed(2)} kg`}
+                                className="bg-muted"
+                              />
+                            );
+                          })()}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Amount and Advance side-by-side */}
+                    <div className="space-y-2 md:col-span-2">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div className="space-y-2">
+                          <Label>Amount (₹) *</Label>
+                          <Input
+                            type="number"
+                            step="0.01"
+                            min="0.01"
+                            value={addDataSeller.amount === 0 ? '' : addDataSeller.amount}
+                            onChange={(e) => {
+                              const v = parseFloat(e.target.value);
+                              setAmountEdited(true);
+                              setAddDataSeller({ ...addDataSeller, amount: isNaN(v) ? 0 : v });
+                            }}
+                            required
+                            placeholder="Enter amount to add"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Advance (₹) <span className="text-xs text-muted-foreground">(optional)</span></Label>
+                          <Input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={addAdvanceAmount}
+                            onChange={(e) => setAddAdvanceAmount(e.target.value)}
+                            placeholder="Enter advance to record now"
+                          />
+                        </div>
+                      </div>
+                    </div>
                   </>
                 }
 
@@ -1957,13 +2405,15 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
               </div>
               )}
 
-              <div className="flex gap-2">
-                <Button type="submit" disabled={loading}>
-                  {loading ? (isCreatingNew ? "Creating..." : (addMode === 'receive' ? "Adding..." : "Saving...")) : (isCreatingNew ? "Create Seller" : (addMode === 'receive' ? "Add Data" : "Save Sale"))}
-                </Button>
-                <Button type="button" variant="outline" onClick={() => { setAddDataSeller(null); setOriginalSeller(null); setIsCreatingNew(false); }}>
-                  Cancel
-                </Button>
+              <div className="sticky bottom-0 bg-background pt-3 pb-2">
+                <div className="flex gap-2">
+                  <Button type="submit" disabled={loading} className="shrink-0">
+                    {loading ? (isCreatingNew ? "Creating..." : (addMode === 'receive' ? "Adding..." : "Saving...")) : (isCreatingNew ? "Create Seller" : (addMode === 'receive' ? "Add Data" : "Save Sale"))}
+                  </Button>
+                  <Button type="button" variant="outline" onClick={() => { setAddDataSeller(null); setOriginalSeller(null); setIsCreatingNew(false); }} className="shrink-0">
+                    Cancel
+                  </Button>
+                </div>
               </div>
             </form>
           )}

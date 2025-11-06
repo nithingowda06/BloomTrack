@@ -22,7 +22,7 @@ export const AllSellersPage = () => {
   const [loading, setLoading] = useState(true);
   const [isAnalyticsOpen, setIsAnalyticsOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string>('');
-  const [dailyPurchases, setDailyPurchases] = useState<Array<{seller: Seller; kg: number; amount: number; date: string; flower?: string; salesman_name?: string; txn_id?: string; latest_contact?: string}>>([]);
+  const [dailyPurchases, setDailyPurchases] = useState<Array<{seller: Seller; kg: number; lw?: number; amount: number; date: string; flower?: string; salesman_name?: string; txn_id?: string; latest_contact?: string}>>([]);
   const [dailySales, setDailySales] = useState<Array<{seller: Seller; kg: number; amount: number; date: string; customer?: string}>>([]);
   const [showResults, setShowResults] = useState(false);
   const [debugView, setDebugView] = useState(false);
@@ -67,7 +67,7 @@ export const AllSellersPage = () => {
       if (!selectedDate) { setDailyPurchases([]); setDailySales([]); return; }
       const targetYMD = toLocalYMD(selectedDate);
       const isSameDay = (d: string) => toLocalYMD(d) === targetYMD;
-      const purchases: Array<{seller: Seller; kg: number; amount: number; date: string; flower?: string; salesman_name?: string; txn_id?: string; latest_contact?: string}> = [];
+      const purchases: Array<{seller: Seller; kg: number; lw?: number; amount: number; date: string; flower?: string; salesman_name?: string; txn_id?: string; latest_contact?: string}> = [];
       const sales: Array<{seller: Seller; kg: number; amount: number; date: string; customer?: string}> = [];
       try {
         await Promise.all(sellers.map(async (s) => {
@@ -75,7 +75,7 @@ export const AllSellersPage = () => {
             const txns = await sellerApi.getTransactions(s.id);
             txns
               .filter(t => isSameDay((t as any).transaction_date || (t as any).created_at))
-              .forEach(t => purchases.push({ seller: s, kg: Number(t.kg_added||0), amount: Number(t.amount_added||0), date: (t as any).transaction_date || (t as any).created_at, flower: (t as any).flower_name || '', salesman_name: (t as any).salesman_name || '', txn_id: (t as any).id }));
+              .forEach(t => purchases.push({ seller: s, kg: Number(t.kg_added||0), lw: Number(t.less_weight||0), amount: Number(t.amount_added||0), date: (t as any).transaction_date || (t as any).created_at, flower: (t as any).flower_name || '', salesman_name: (t as any).salesman_name || '', txn_id: (t as any).id }));
           } catch {}
           try {
             const so = await sellerApi.getSoldToTransactions(s.id);
@@ -454,6 +454,7 @@ export const AllSellersPage = () => {
                         <th className="text-left p-2">Serial</th>
                         <th className="text-left p-2">Seller</th>
                         <th className="text-right p-2">Weight (kg)</th>
+                        <th className="text-right p-2">LW (kg)</th>
                         <th className="text-right p-2">Amount (₹)</th>
                         <th className="text-left p-2">Sold To</th>
                       </tr>
@@ -468,6 +469,7 @@ export const AllSellersPage = () => {
                             <td className="p-2">{p.seller.serial_number}</td>
                             <td className="p-2">{p.seller.name}</td>
                             <td className="p-2 text-right">{p.kg.toFixed(2)}</td>
+                            <td className="p-2 text-right">{Number(p.lw||0).toFixed(2)}</td>
                             <td className="p-2 text-right">₹{p.amount.toFixed(2)}</td>
                             <td className="p-2 text-left">{
                               (() => {
