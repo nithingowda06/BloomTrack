@@ -158,7 +158,13 @@ const Payments: React.FC = () => {
       commission = Math.max(0, Number((totalAmt - (Number(h.amount||0) + advancePrev)).toFixed(2)));
     }
     const afterCommission = Math.max(0, totalAmt - commission);
-    const grandTotal = Math.max(0, Number(h.amount || 0));
+    // If we have cached inputs (or we just reconstructed commission/advance),
+    // compute the Grand Total from the visible math to avoid mismatches with
+    // any historic saved-amount discrepancies.
+    const useComputedGrand = !!cached || true; // prefer consistent visible calculation
+    const grandTotal = useComputedGrand
+      ? Math.max(0, afterCommission - advancePrev)
+      : Math.max(0, Number(h.amount || 0));
 
     const html = `
       <html>
