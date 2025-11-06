@@ -410,25 +410,22 @@ const Payments: React.FC = () => {
           const startTs = bucketKey * BUCKET_MS;
           const endTs = startTs + BUCKET_MS - 1;
           const centerTs = new Date(bucket.paid_at).getTime();
-          let cFrom: string | undefined;
-          let cTo: string | undefined;
+          let bestKey: string | null = null;
+          let bestDelta = Number.POSITIVE_INFINITY;
           for (const k of Object.keys(cache)) {
-            const [sid, fromK, toK] = k.split('|');
+            const [sid] = k.split('|');
             if (String(sid) !== String(histSeller.id)) continue;
-            const item = cache[k];
-            const ts = Number(item?.ts || 0);
-            // Accept either strict-bucket match OR proximity match within ±10 minutes to the bucket paid_at
+            const ts = Number(cache[k]?.ts || 0);
             if ((ts >= startTs && ts <= endTs) || (centerTs > 0 && Math.abs(ts - centerTs) <= 10*60*1000)) {
-              const nf = normDate(fromK) || undefined;
-              const nt = normDate(toK) || undefined;
-              cFrom = (!cFrom ? nf : !nf ? cFrom : (cFrom <= nf ? cFrom : nf));
-              cTo = (!cTo ? nt : !nt ? cTo : (cTo >= nt ? cTo : nt));
+              const delta = centerTs > 0 ? Math.abs(ts - centerTs) : 0;
+              if (delta < bestDelta) { bestDelta = delta; bestKey = k; }
             }
           }
-          if (cFrom || cTo) {
+          if (bestKey) {
+            const [, fromK, toK] = bestKey.split('|');
             const b = buckets.get(bucketKey)!;
-            b.display_from = cFrom || b.display_from || b.from_date;
-            b.display_to = cTo || b.display_to || b.to_date;
+            b.display_from = normDate(fromK) || b.display_from || b.from_date;
+            b.display_to = normDate(toK) || b.display_to || b.to_date;
             buckets.set(bucketKey, b);
           }
         }
