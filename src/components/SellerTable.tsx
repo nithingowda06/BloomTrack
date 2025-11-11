@@ -2207,6 +2207,16 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                           >
                             <option value="">Select flower</option>
                             <option value="Rose">Rose</option>
+                            <option value="Modi">Modi</option>
+                            <option value="Mango gold">Mango gold</option>
+                            <option value="Gilly yellow">Gilly yellow</option>
+                            <option value="Paneer">Paneer</option>
+                            <option value="Single orange">Single orange</option>
+                            <option value="Battance">Battance</option>
+                            <option value="Orange">Orange</option>
+                            <option value="Romance">Romance</option>
+                            <option value="Priya gold">Priya gold</option>
+                            <option value="Savi">Savi</option>
                             <option value="Sent yellow">Sent yellow</option>
                             <option value="Sent white">Sent white</option>
                             <option value="Chocolate">Chocolate</option>
@@ -2372,38 +2382,7 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                 {/* Sold To form removed from Add Data dialog */}
               </div>
               
-              {/* Summary Card - Only show when adding data, not creating new */}
-              {(!isCreatingNew && originalSeller && addMode === 'receive') && (
-                <div className="bg-blue-50 dark:bg-blue-950 p-4 rounded-lg border border-blue-200 dark:border-blue-800">
-                <h4 className="font-semibold text-sm mb-2">Summary</h4>
-                <div className="grid grid-cols-2 gap-2 text-sm">
-                  <div>
-                    <span className="text-muted-foreground">Previous Weight:</span>
-                    <span className="ml-2 font-medium">{Number(originalSeller.kg).toFixed(2)} kg</span>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Previous Amount:</span>
-                    <span className="ml-2 font-medium">₹{Number(originalSeller.amount).toFixed(2)}</span>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Adding:</span>
-                    <span className="ml-2 font-medium text-blue-600">{addDataSeller.kg ? `+${Number(addDataSeller.kg).toFixed(2)} kg` : '—'}</span>
-                  </div>
-                  <div>
-                    <span className="text-muted-foreground">Adding:</span>
-                    <span className="ml-2 font-medium text-blue-600">{addDataSeller.amount ? `+₹${Number(addDataSeller.amount).toFixed(2)}` : '—'}</span>
-                  </div>
-                  <div className="font-semibold text-green-600">
-                    <span>New Total:</span>
-                    <span className="ml-2">{addDataSeller.kg ? (Number(originalSeller.kg) + Number(addDataSeller.kg)).toFixed(2) + ' kg' : '—'}</span>
-                  </div>
-                  <div className="font-semibold text-green-600">
-                    <span>New Total:</span>
-                    <span className="ml-2">{addDataSeller.amount ? `₹${(Number(originalSeller.amount) + Number(addDataSeller.amount)).toFixed(2)}` : '—'}</span>
-                  </div>
-                </div>
-              </div>
-              )}
+              
 
               <div className="sticky bottom-0 bg-background pt-3 pb-2">
                 <div className="flex gap-2">
