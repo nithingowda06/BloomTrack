@@ -1165,12 +1165,11 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                                               className="text-sm h-8 text-red-600 border-red-200 hover:text-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
                                               onClick={(e) => { 
                                                 e.stopPropagation(); 
-                                                const hasLinked = ((tablePayments[(seller as any).id] || []).some((p: any) => (p as any).transaction_id === (txn as any).id));
-                                                if (hasLinked) { try { toast.error?.('Cannot delete: advance/payment exists for this update'); } catch {} return; }
-                                                setDeletingTxnSeller(seller); setDeletingTxn(txn); try { toast.message?.('Confirm delete…'); } catch {} 
+                                                setDeletingTxnSeller(seller); 
+                                                setDeletingTxn(txn); 
+                                                try { toast.message?.('Confirm delete…'); } catch {} 
                                               }}
-                                              disabled={(tablePayments[(seller as any).id] || []).some((p: any) => (p as any).transaction_id === (txn as any).id)}
-                                              title={((tablePayments[(seller as any).id] || []).some((p: any) => (p as any).transaction_id === (txn as any).id)) ? 'Cannot delete: advance/payment exists' : 'Delete this update'}
+                                              title="Delete this update"
                                             >
                                               Delete
                                             </Button>
