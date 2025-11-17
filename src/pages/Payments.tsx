@@ -510,7 +510,9 @@ const Payments: React.FC = () => {
     const from = fromDate ? toLocalStart(fromDate) : null;
     const to = toDate ? toLocalEnd(toDate) : null;
 
-    const byDay = new Map<string, { netKg: number; lwKg: number; amount: number; effKg: number }>();
+    // Track per-transaction data (one entry per update) while still
+    // maintaining per-day maps for cleared/advance lookups.
+    const perTxn: Array<{ ymd: string; netKg: number; lwKg: number; effKg: number; amount: number }> = [];
     const idsByDay = new Map<string, Set<string>>();
     for (const t of result.txns) {
       const d = parseTxnDate((t as any).transaction_date || (t as any).created_at);
@@ -524,12 +526,8 @@ const Payments: React.FC = () => {
       const netKg = Number((t as any).kg_added || 0);
       const lw = Number((t as any).less_weight || 0);
       const amt = Number((t as any).amount_added || 0);
-      const cur = byDay.get(ymd) || { netKg: 0, lwKg: 0, amount: 0, effKg: 0 };
-      cur.netKg += netKg;
-      cur.lwKg += lw;
-      cur.amount += amt;
-      cur.effKg += Math.max(0, netKg - lw);
-      byDay.set(ymd, cur);
+      const effKg = Math.max(0, netKg - lw);
+      perTxn.push({ ymd, netKg, lwKg: lw, effKg, amount: amt });
       const setIds = idsByDay.get(ymd) || new Set<string>();
       if (tidPrimary) setIds.add(tidPrimary);
       if (tidAlt) setIds.add(tidAlt);
@@ -647,13 +645,30 @@ const Payments: React.FC = () => {
       }
     }
 
-    const rows = Array.from(byDay.entries())
-      .map(([ymd, v]) => {
-        const rate = v.effKg > 0 ? Number((v.amount / v.effKg).toFixed(2)) : 0;
-        const adv = Number((advByDay.get(ymd) || 0).toFixed(2));
+    // Build one row per transaction; if multiple transactions exist on the
+    // same day, they will appear as separate rows. Advance for that day is
+    // shown on the first row only to avoid double-counting in the UI.
+    const dayRowIndex = new Map<string, number>();
+    const rows = perTxn
+      .map(({ ymd, netKg, lwKg, effKg, amount }) => {
+        const rate = effKg > 0 ? Number((amount / effKg).toFixed(2)) : 0;
+        const idx = dayRowIndex.get(ymd) || 0;
+        dayRowIndex.set(ymd, idx + 1);
+        const advDay = Number((advByDay.get(ymd) || 0).toFixed(2));
+        const adv = idx === 0 ? advDay : 0;
         const parts = ymd.split('-');
         const dateLabel = parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : ymd;
-        return { ymd, dateLabel, netKg: Number(v.netKg.toFixed(2)), lwKg: Number(v.lwKg.toFixed(2)), effKg: Number(v.effKg.toFixed(2)), rate, amount: Number(v.amount.toFixed(2)), advance: adv, cleared: !!clearedByDay.get(ymd) } as any;
+        return {
+          ymd,
+          dateLabel,
+          netKg: Number(netKg.toFixed(2)),
+          lwKg: Number(lwKg.toFixed(2)),
+          effKg: Number(effKg.toFixed(2)),
+          rate,
+          amount: Number(amount.toFixed(2)),
+          advance: adv,
+          cleared: !!clearedByDay.get(ymd),
+        } as any;
       })
       .sort((a,b) => a.ymd.localeCompare(b.ymd));
     return rows;
@@ -1224,9 +1239,9 @@ const Payments: React.FC = () => {
     const useTo = receipt?.to ?? toDate;
     const paidAmt = receipt ? Number(receipt.amount || 0) : Number(cleared.clearedAmount || 0);
     const paidKg = receipt ? Number(receipt.kg || 0) : Number(cleared.clearedKg || 0);
-    // Build detailed rows from transactions within selected range
-    const selFrom = useFrom ? new Date(useFrom) : null;
-    const selTo = useTo ? new Date(useTo) : null;
+    // Build detailed rows from individual transactions within selected range.
+    // This ensures that multiple flowers/updates on the same date appear as
+    // separate lines in the printed receipt instead of being merged by day.
     const toLocalStart = (ymd: string) => { const [y,m,d] = ymd.split('-').map(Number); return new Date(y, (m||1)-1, d||1, 0,0,0,0); };
     const toLocalEnd = (ymd: string) => { const [y,m,d] = ymd.split('-').map(Number); return new Date(y, (m||1)-1, d||1, 23,59,59,999); };
     const parseTxnDate = (val: any) => { const s = String(val||''); if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return toLocalStart(s); return new Date(s); };
@@ -1235,60 +1250,23 @@ const Payments: React.FC = () => {
       const toD = useTo ? toLocalEnd(String(useTo)) : null;
       if (fromD && d < fromD) return false; if (toD && d > toD) return false; return true;
     };
-    // Prefer printing ONLY unpaid days using precomputed dailyRows (which already marks cleared days)
-    let computedRows: Array<{ dateStr: string; d: Date; kg: number; less: number; effKg: number; rate: number; amount: number }>; 
-    try {
-      const unpaid = (dailyRows as any[])
-        .filter(r => !r.cleared)
-        .map(r => ({
-          dateStr: r.ymd,
-          d: toLocalStart(r.ymd),
-          kg: Number(r.netKg || 0),
-          less: Number(r.lwKg || 0),
-          effKg: Number(r.effKg || 0),
-          amount: Number(r.amount || 0),
-        }))
-        .filter(r => inRange(r.d))
-        .sort((a,b) => a.d.getTime() - b.d.getTime())
-        .map(r => ({ ...r, rate: r.effKg > 0 ? Number((r.amount / r.effKg).toFixed(2)) : 0 }));
-      if (unpaid.length > 0) {
-        computedRows = unpaid as any;
-      } else {
-        // Fallback: original behavior (all rows in selected range)
-        const rows = (result.txns || [])
-          .map((t: any) => ({
-            dateStr: (t.transaction_date || t.created_at),
-            d: parseTxnDate(t.transaction_date || t.created_at),
-            kg: Number(t.kg_added || 0),
-            less: Number(t.less_weight || 0),
-            amount: Number(t.amount_added || 0),
-          }))
-          .filter(r => inRange(r.d))
-          .sort((a,b) => a.d.getTime() - b.d.getTime());
-        computedRows = rows.map(r => {
-          const effKg = Math.max(0, Number((r.kg - r.less).toFixed(2)));
-          const rate = effKg > 0 ? Number((r.amount / effKg).toFixed(2)) : 0;
-          return { ...r, effKg, rate };
-        });
-      }
-    } catch {
-      // Safe fallback
-      const rows = (result.txns || [])
-        .map((t: any) => ({
-          dateStr: (t.transaction_date || t.created_at),
-          d: parseTxnDate(t.transaction_date || t.created_at),
-          kg: Number(t.kg_added || 0),
-          less: Number(t.less_weight || 0),
-          amount: Number(t.amount_added || 0),
-        }))
-        .filter(r => inRange(r.d))
-        .sort((a,b) => a.d.getTime() - b.d.getTime());
-      computedRows = rows.map(r => {
-        const effKg = Math.max(0, Number((r.kg - r.less).toFixed(2)));
-        const rate = effKg > 0 ? Number((r.amount / effKg).toFixed(2)) : 0;
-        return { ...r, effKg, rate };
-      });
-    }
+
+    const rows = (result.txns || [])
+      .map((t: any) => ({
+        dateStr: (t.transaction_date || t.created_at),
+        d: parseTxnDate(t.transaction_date || t.created_at),
+        kg: Number(t.kg_added || 0),
+        less: Number(t.less_weight || 0),
+        amount: Number(t.amount_added || 0),
+      }))
+      .filter(r => inRange(r.d))
+      .sort((a,b) => a.d.getTime() - b.d.getTime());
+
+    const computedRows = rows.map(r => {
+      const effKg = Math.max(0, Number((r.kg - r.less).toFixed(2)));
+      const rate = effKg > 0 ? Number((r.amount / effKg).toFixed(2)) : 0;
+      return { ...r, effKg, rate };
+    });
     const totalAmt = computedRows.reduce((s,r) => s + Number(r.amount||0), 0);
     const totalKg = computedRows.reduce((s,r) => s + Number(r.effKg||0), 0);
 
@@ -1317,28 +1295,28 @@ const Payments: React.FC = () => {
           <style>
             ${thermalMode ? `
             @page { size: 80mm auto; margin: 0; }
-            body { width: 80mm; margin: 0; font-family: -apple-system, Segoe UI, Roboto, Arial; padding: 6px 8px; font-weight: 500; }
-            h1 { font-size: 14px; margin: 0 0 6px 0; text-align:center; font-weight: 800; }
-            .muted { color: #222; font-size: 10px; margin: 0 0 6px 0; text-align:center; font-weight: 600; }
+            body { width: 80mm; margin: 0; font-family: -apple-system, Segoe UI, Roboto, Arial; padding: 6px 8px; font-weight: 600; }
+            h1 { font-size: 16px; margin: 0 0 6px 0; text-align:center; font-weight: 900; }
+            .muted { color: #000; font-size: 11px; margin: 0 0 6px 0; text-align:center; font-weight: 700; }
             table { width: 100%; border-collapse: collapse; margin-top: 6px; }
-            th, td { border-top: 1px dashed #000; padding: 6px 0; font-size: 11px; }
-            th { text-align: left; font-weight: 800; }
-            td { font-weight: 700; }
+            th, td { border-top: 2px dashed #000; padding: 7px 0; font-size: 12px; }
+            th { text-align: left; font-weight: 900; text-transform: uppercase; letter-spacing: .3px; }
+            td { font-weight: 800; }
             .shop { text-align:center; margin-bottom:6px; }
-            .shop h2 { margin:0 0 4px 0; font-size:12px; font-weight: 800; }
-            .shop div { font-size:11px; line-height:1.4; font-weight: 700; }
-            .hr { border-top: 1px dashed #000; margin: 6px 0; }
+            .shop h2 { margin:0 0 4px 0; font-size:13px; font-weight: 900; }
+            .shop div { font-size:12px; line-height:1.4; font-weight: 800; }
+            .hr { border-top: 2px dashed #000; margin: 6px 0; }
             ` : `
-            body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial; padding: 20px; }
-            h1 { font-size: 22px; margin-bottom: 6px; font-weight: 900; }
-            .muted { color: #111827; font-size: 12px; margin-bottom: 14px; font-weight: 600; }
-            table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-            th, td { border: 1px solid #111827; padding: 8px; font-size: 13px; }
-            th { background: #f3f4f6; text-align: left; font-weight: 800; }
-            td { font-weight: 700; }
-            .shop { border:1px solid #111827; border-radius:8px; padding:12px; margin-bottom:12px; }
-            .shop h2 { margin:0 0 8px 0; font-size:16px; font-weight: 900; }
-            .shop div { font-size:13px; line-height:1.6; font-weight: 700; }
+            body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial; padding: 24px; }
+            h1 { font-size: 26px; margin-bottom: 8px; font-weight: 900; }
+            .muted { color: #000; font-size: 13px; margin-bottom: 16px; font-weight: 700; }
+            table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+            th, td { border: 2px solid #000; padding: 10px; font-size: 14px; }
+            th { background: #fff; text-align: left; font-weight: 900; text-transform: uppercase; letter-spacing: .3px; }
+            td { font-weight: 800; }
+            .shop { border:2px solid #000; border-radius:8px; padding:12px; margin-bottom:12px; }
+            .shop h2 { margin:0 0 8px 0; font-size:18px; font-weight: 900; }
+            .shop div { font-size:14px; line-height:1.6; font-weight: 800; }
             `}
           </style>
         </head>
@@ -1364,11 +1342,11 @@ const Payments: React.FC = () => {
           <table>
             <thead>
               <tr>
-                <th>Date</th>
-                <th style="text-align:right">Net W (kg)</th>
-                <th style="text-align:right">Less W (kg)</th>
-                <th style="text-align:right">Calc</th>
-                <th style="text-align:right">Total</th>
+                <th>DATE</th>
+                <th style="text-align:right">NET W (KG)</th>
+                <th style="text-align:right">LW (KG)</th>
+                <th style="text-align:right">CALC</th>
+                <th style="text-align:right">TOTAL</th>
               </tr>
             </thead>
             <tbody>
@@ -1382,23 +1360,23 @@ const Payments: React.FC = () => {
                 </tr>
               `).join('')}
               <tr>
-                <th colspan="4" style="text-align:right">Total</th>
+                <th colspan="4" style="text-align:right">TOTAL</th>
                 <td style="text-align:right">₹${totalAmt.toFixed(2)}</td>
               </tr>
               <tr>
-                <th colspan="4" style="text-align:right">Commission</th>
+                <th colspan="4" style="text-align:right">COMMISSION</th>
                 <td style="text-align:right">₹${commission.toFixed(2)}</td>
               </tr>
               <tr>
-                <th colspan="4" style="text-align:right">After Commission</th>
+                <th colspan="4" style="text-align:right">AFTER COMMISSION</th>
                 <td style="text-align:right">₹${afterCommission.toFixed(2)}</td>
               </tr>
               <tr>
-                <th colspan="4" style="text-align:right">Advance (already paid)</th>
+                <th colspan="4" style="text-align:right">ADVANCE (ALREADY PAID)</th>
                 <td style="text-align:right">₹${advancePrev.toFixed(2)}</td>
               </tr>
               <tr>
-                <th colspan="4" style="text-align:right">Grand Total</th>
+                <th colspan="4" style="text-align:right">GRAND TOTAL</th>
                 <td style="text-align:right">₹${grandTotal.toFixed(2)}</td>
               </tr>
             </tbody>

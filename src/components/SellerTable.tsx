@@ -1138,6 +1138,19 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                                             <span className="opacity-80">Net</span>
                                             <span>+{Number(txn.kg_added).toFixed(2)} kg</span>
                                           </span>
+                                          {(() => {
+                                            const net = Number((txn as any).kg_added || 0);
+                                            const less = Number((txn as any).less_weight || 0);
+                                            const eff = Math.max(0, net - less);
+                                            const amt = Number((txn as any).amount_added || 0);
+                                            const rate = eff > 0 ? amt / eff : 0;
+                                            return (
+                                              <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold border bg-zinc-100 text-foreground border-zinc-200 whitespace-nowrap h-7">
+                                                <span className="opacity-80">Rate</span>
+                                                <span>{eff > 0 ? `₹${rate.toFixed(2)}/kg` : '—'}</span>
+                                              </span>
+                                            );
+                                          })()}
                                           {/* Less chip removed from row view (shown in Update Details dialog) */}
                                           <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold border bg-emerald-100 text-emerald-700 border-emerald-200 whitespace-nowrap h-7">
                                             <span className="opacity-80">Amount</span>
