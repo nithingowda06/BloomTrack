@@ -1164,10 +1164,19 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
                                               size="sm"
                                               className="text-sm h-8 text-red-600 border-red-200 hover:text-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
                                               onClick={(e) => { 
-                                                e.stopPropagation(); 
-                                                setDeletingTxnSeller(seller); 
-                                                setDeletingTxn(txn); 
-                                                try { toast.message?.('Confirm delete…'); } catch {} 
+                                                e.stopPropagation();
+                                                if (!seller) {
+                                                  console.error('No seller available for deletion');
+                                                  toast.error('Cannot delete: Seller information is missing');
+                                                  return;
+                                                }
+                                                setDeletingTxn(txn);
+                                                setDeletingTxnSeller(seller);
+                                                try { 
+                                                  toast.message?.('Confirm delete…'); 
+                                                } catch (e) {
+                                                  console.error('Toast error:', e);
+                                                }
                                               }}
                                               title="Delete this update"
                                             >
@@ -2010,7 +2019,15 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
       </Dialog>
 
       {/* Delete purchase transaction confirm */}
-      <AlertDialog open={!!deletingTxn} onOpenChange={() => { setDeletingTxn(null); setDeletingTxnSeller(null); }}>
+      <AlertDialog 
+        open={!!deletingTxn} 
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeletingTxn(null);
+            setDeletingTxnSeller(null);
+          }
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete this update?</AlertDialogTitle>
@@ -2019,20 +2036,36 @@ export const SellerTable = ({ sellers, onUpdate }: SellerTableProps) => {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => { setDeletingTxn(null); setDeletingTxnSeller(null); }}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={async () => {
+                if (!deletingTxn) {
+                  toast.error('No transaction selected for deletion');
+                  setDeletingTxn(null);
+                  setDeletingTxnSeller(null);
+                  return;
+                }
+
+                const sellerId = deletingTxnSeller?.id || deletingTxn.seller_id;
+                if (!sellerId) {
+                  toast.error('Cannot determine seller for this transaction');
+                  setDeletingTxn(null);
+                  setDeletingTxnSeller(null);
+                  return;
+                }
+
                 try {
-                  await sellerApi.deleteTransaction((deletingTxnSeller as any).id, (deletingTxn as any).id);
-                  const sid = (deletingTxnSeller as any).id;
-                  const data = await sellerApi.getTransactions(sid);
-                  setTableTransactions((prev) => ({ ...prev, [sid]: data }));
+                  await sellerApi.deleteTransaction(sellerId, deletingTxn.id);
+                  const data = await sellerApi.getTransactions(sellerId);
+                  setTableTransactions(prev => ({ ...prev, [sellerId]: data }));
+                  toast.success('Transaction deleted successfully');
+                } catch (err: any) {
+                  console.error('Delete error:', err);
+                  toast.error(err?.response?.data?.error || 'Failed to delete transaction');
+                } finally {
                   setDeletingTxn(null);
                   setDeletingTxnSeller(null);
                   onUpdate();
-                  toast.success('Update deleted successfully');
-                } catch (err: any) {
-                  toast.error(err?.message || 'Failed to delete update');
                 }
               }}
             >
