@@ -4,6 +4,65 @@ import { authenticateToken, AuthRequest } from '../middleware/auth.js';
 
 const router = Router();
 
+// Delete a seller and all related data
+router.delete('/:id', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const { id } = req.params;
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    // Verify the seller belongs to the authenticated user
+    const sellerCheck = await client.query(
+      'SELECT id FROM sellers WHERE id = $1 AND owner_id = $2',
+      [id, req.userId]
+    );
+
+    if (sellerCheck.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Seller not found or access denied' });
+    }
+
+    try {
+      // Delete related sold_to_transactions first (due to foreign key constraints)
+      await client.query(
+        'DELETE FROM sold_to_transactions WHERE seller_id = $1',
+        [id]
+      );
+
+      // Delete related seller_transactions
+      await client.query(
+        'DELETE FROM seller_transactions WHERE seller_id = $1',
+        [id]
+      );
+
+      // Delete related sale_to entries
+      await client.query(
+        'DELETE FROM sale_to WHERE seller_id = $1',
+        [id]
+      );
+
+      // Finally, delete the seller
+      await client.query(
+        'DELETE FROM sellers WHERE id = $1',
+        [id]
+      );
+    } catch (error) {
+      console.error('Database error during deletion:', error);
+      throw error; // This will be caught by the outer catch block
+    }
+
+    await client.query('COMMIT');
+    res.json({ message: 'Seller and all related data deleted successfully' });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error deleting seller:', error);
+    res.status(500).json({ error: 'Failed to delete seller' });
+  } finally {
+    client.release();
+  }
+});
+
 router.get('/', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
     const result = await pool.query(
@@ -105,93 +164,20 @@ router.put('/transactions/:txnId/salesman', async (req: any, res: Response) => {
   }
 });
 
-// Update a transaction (purchase update)
+// Update a transaction (purchase or advance)
 router.put('/:id/transactions/:txnId', authenticateToken, async (req: AuthRequest, res: Response) => {
   const { id, txnId } = req.params;
-  const { transaction_date, amount_added, kg_added, flower_name, salesman_name, salesman_mobile, salesman_address } = req.body as any;
-
-  try {
-    await pool.query('BEGIN');
-
-    // Verify seller exists (owner check relaxed to avoid 404s while assigning salesman)
-    const sellerCheck = await pool.query(
-      'SELECT * FROM sellers WHERE id = $1',
-      [id]
-    );
-    if (sellerCheck.rows.length === 0) {
-      await pool.query('ROLLBACK');
-      return res.status(404).json({ error: 'Seller not found' });
-    }
-    const seller = sellerCheck.rows[0];
-
-    // Get existing transaction
-    const txnCheck = await pool.query(
-      'SELECT * FROM seller_transactions WHERE id = $1 AND seller_id = $2',
-      [txnId, id]
-    );
-    if (txnCheck.rows.length === 0) {
-      await pool.query('ROLLBACK');
-      return res.status(404).json({ error: 'Transaction not found' });
-    }
-    const oldTxn = txnCheck.rows[0];
-
-    // Normalize inputs; fall back to old values if missing/invalid
-    const parsedAmt = Number(amount_added);
-    const parsedKg = Number(kg_added);
-    const newAmtAdded = Number.isFinite(parsedAmt) ? parsedAmt : Number(oldTxn.amount_added);
-    const newKgAdded = Number.isFinite(parsedKg) ? parsedKg : Number(oldTxn.kg_added);
-    // Validate date: keep old if invalid/empty
-    const txDateStr = (transaction_date || '').toString().trim();
-    const newTxDate = txDateStr && !isNaN(Date.parse(txDateStr)) ? txDateStr : oldTxn.transaction_date;
-
-    // Compute deltas versus old values
-    const deltaKg = newKgAdded - Number(oldTxn.kg_added);
-    const deltaAmt = newAmtAdded - Number(oldTxn.amount_added);
-
-    // Update transaction values; keep previous_* the same, recompute new totals based on previous + new adds
-    const updatedTxn = await pool.query(
-      `UPDATE seller_transactions
-       SET transaction_date = $1,
-           amount_added = $2,
-           kg_added = $3,
-           new_total_amount = previous_amount + $2,
-           new_total_kg = previous_kg + $3,
-           flower_name = COALESCE($4, flower_name),
-           salesman_name = COALESCE($5, salesman_name),
-           salesman_mobile = COALESCE($6, salesman_mobile),
-           salesman_address = COALESCE($7, salesman_address)
-       WHERE id = $8 AND seller_id = $9
-       RETURNING *`,
-      [newTxDate, newAmtAdded, newKgAdded, flower_name || null, salesman_name || null, salesman_mobile || null, salesman_address || null, txnId, id]
-    );
-
-    // Adjust seller current totals by the delta
-    const newSellerKg = Math.max(0, Number(seller.kg) + deltaKg);
-    const newSellerAmt = Math.max(0, Number(seller.amount) + deltaAmt);
-    await pool.query(
-      'UPDATE sellers SET kg = $1, amount = $2, date = $3, updated_at = NOW() WHERE id = $4',
-      [newSellerKg, newSellerAmt, newTxDate, id]
-    );
-
-    await pool.query('COMMIT');
-    res.json(updatedTxn.rows[0]);
-  } catch (error) {
-    await pool.query('ROLLBACK');
-    console.error('Update transaction error:', {
-      error,
-      params: { id, txnId },
-      body: { transaction_date, amount_added, kg_added, flower_name, salesman_name, salesman_mobile, salesman_address }
-    });
-    const msg = (error as any)?.message || 'Failed to update transaction';
-    // Expose pg error detail for debugging (safe surface)
-    const detail = (error as any)?.detail || (error as any)?.hint || undefined;
-    res.status(500).json({ error: msg, detail });
-  }
-});
-
-// Delete a transaction (purchase update)
-router.delete('/:id/transactions/:txnId', authenticateToken, async (req: AuthRequest, res: Response) => {
-  const { id, txnId } = req.params;
+  const { 
+    transaction_date, 
+    amount_added, 
+    kg_added, 
+    flower_name, 
+    salesman_name, 
+    salesman_mobile, 
+    salesman_address,
+    transaction_type,
+    less_weight
+  } = req.body as any;
 
   try {
     await pool.query('BEGIN');
@@ -205,6 +191,7 @@ router.delete('/:id/transactions/:txnId', authenticateToken, async (req: AuthReq
       await pool.query('ROLLBACK');
       return res.status(404).json({ error: 'Seller not found' });
     }
+    const seller = sellerCheck.rows[0];
 
     const txnCheck = await pool.query(
       'SELECT * FROM seller_transactions WHERE id = $1 AND seller_id = $2',
@@ -214,23 +201,250 @@ router.delete('/:id/transactions/:txnId', authenticateToken, async (req: AuthReq
       await pool.query('ROLLBACK');
       return res.status(404).json({ error: 'Transaction not found' });
     }
-    const txn = txnCheck.rows[0];
+    const oldTxn = txnCheck.rows[0];
+    const currentType = transaction_type || oldTxn.transaction_type || 'purchase';
 
-    // Reverse the transaction from seller totals
+    // Calculate the difference from the old transaction
+    const oldAmount = parseFloat(oldTxn.amount_added) || 0;
+    const oldKg = parseFloat(oldTxn.kg_added) || 0;
+    const newAmount = parseFloat(amount_added) || 0;
+    const newKg = parseFloat(kg_added) || 0;
+    const amountDiff = newAmount - oldAmount;
+    const kgDiff = newKg - oldKg;
+
+    // Update seller with the difference
+    const currentAmount = parseFloat(seller.amount) || 0;
+    const currentKg = parseFloat(seller.kg) || 0;
+    
+    // For advance transactions, we allow negative amounts
+    const updatedAmount = currentType === 'advance' 
+      ? currentAmount + amountDiff  // Can be negative
+      : Math.max(0, currentAmount + amountDiff);  // Regular purchases can't be negative
+      
+    const updatedKg = Math.max(0, currentKg + kgDiff);
+
+    // Only check for negative balance for non-advance transactions
+    if (currentType !== 'advance' && (updatedAmount < 0 || updatedKg < 0)) {
+      await pool.query('ROLLBACK');
+      return res.status(400).json({ error: 'Update would result in negative balance' });
+    }
+
     await pool.query(
-      'UPDATE sellers SET kg = kg - $1, amount = amount - $2, updated_at = NOW() WHERE id = $3',
-      [txn.kg_added, txn.amount_added, id]
+      'UPDATE sellers SET amount = $1, kg = $2, updated_at = NOW() WHERE id = $3',
+      [updatedAmount, updatedKg, id]
     );
 
-    // Delete the transaction
-    await pool.query('DELETE FROM seller_transactions WHERE id = $1 AND seller_id = $2', [txnId, id]);
+    // Update transaction
+    await pool.query(
+      'ALTER TABLE seller_transactions ADD COLUMN IF NOT EXISTS less_weight DECIMAL(10, 2) DEFAULT 0'
+    );
+    const lwUpdate = (less_weight === undefined || less_weight === null) ? null : Number(less_weight);
+    const result = await pool.query(
+      `UPDATE seller_transactions 
+       SET transaction_date = $1, 
+           amount_added = $2, 
+           kg_added = $3,
+           less_weight = COALESCE($4, less_weight), 
+           new_total_amount = $5, 
+           new_total_kg = $6,
+           flower_name = $7,
+           salesman_name = $8,
+           salesman_mobile = $9,
+           salesman_address = $10,
+           transaction_type = $11
+       WHERE id = $12 AND seller_id = $13
+       RETURNING *`,
+      [
+        transaction_date || oldTxn.transaction_date,
+        newAmount,
+        newKg,
+        lwUpdate,
+        updatedAmount,
+        updatedKg,
+        flower_name !== undefined ? flower_name : oldTxn.flower_name,
+        salesman_name !== undefined ? salesman_name : oldTxn.salesman_name,
+        salesman_mobile !== undefined ? salesman_mobile : oldTxn.salesman_mobile,
+        salesman_address !== undefined ? salesman_address : oldTxn.salesman_address,
+        currentType,
+        txnId,
+        id
+      ]
+    );
 
     await pool.query('COMMIT');
-    res.json({ message: 'Transaction deleted successfully' });
+    res.json(result.rows[0]);
   } catch (error) {
     await pool.query('ROLLBACK');
-    console.error('Delete transaction error:', error);
-    res.status(500).json({ error: 'Failed to delete transaction' });
+    console.error('Update transaction error:', error);
+    const msg = (error as any)?.message || 'Failed to update transaction';
+    // Expose pg error detail for debugging (safe surface)
+    const detail = (error as any)?.detail || (error as any)?.hint || undefined;
+    res.status(500).json({ error: msg, detail });
+  }
+});
+
+// Delete a transaction (purchase update)
+router.delete('/:id/transactions/:txnId', authenticateToken, async (req: AuthRequest, res: Response) => {
+  const { id, txnId } = req.params;
+  const client = await pool.connect();  // Get a client from the pool
+
+  try {
+    await client.query('BEGIN');
+    console.log(`Starting delete transaction ${txnId} for seller ${id}`);
+
+    // Verify seller exists and belongs to user
+    const sellerCheck = await client.query(
+      'SELECT * FROM sellers WHERE id = $1 AND owner_id = $2 FOR UPDATE',
+      [id, req.userId]
+    );
+    
+    if (sellerCheck.rows.length === 0) {
+      console.error('Seller not found or access denied');
+      await client.query('ROLLBACK');
+      client.release();
+      return res.status(404).json({ error: 'Seller not found' });
+    }
+    
+    const seller = sellerCheck.rows[0];
+    console.log('Seller verified:', { sellerId: seller.id, currentAmount: seller.amount, currentKg: seller.kg });
+
+    // Get the transaction to be deleted with FOR UPDATE to lock the row
+    const txnCheck = await client.query(
+      'SELECT * FROM seller_transactions WHERE id = $1 AND seller_id = $2 FOR UPDATE',
+      [txnId, id]
+    );
+    
+    if (txnCheck.rows.length === 0) {
+      console.error('Transaction not found');
+      await client.query('ROLLBACK');
+      client.release();
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+    
+    const txn = txnCheck.rows[0];
+    console.log('Transaction found:', { 
+      transactionId: txn.id, 
+      amountAdded: txn.amount_added, 
+      kgAdded: txn.kg_added,
+      transactionType: txn.transaction_type
+    });
+
+    // Handle different transaction types
+    const transactionType = txn.transaction_type || 'purchase';
+    const isAdvance = transactionType === 'advance';
+
+    const transactionAmount = Number(txn.amount_added) || 0;
+    const transactionKg = Number(txn.kg_added) || 0;
+
+    const currentAmount = Number(seller.amount) || 0;
+    const currentKg = Number(seller.kg) || 0;
+
+    // If there are any payments tied to this transaction, we must reverse them first
+    // so that balances remain consistent and to avoid foreign key issues.
+    const paymentAgg = await client.query(
+      'SELECT COALESCE(SUM(amount),0) AS amt, COALESCE(SUM(cleared_kg),0) AS kg FROM payments WHERE transaction_id = $1',
+      [txnId]
+    );
+    const linkedPaymentAmount = Number(paymentAgg.rows?.[0]?.amt || 0);
+    const linkedPaymentKg = Number(paymentAgg.rows?.[0]?.kg || 0);
+
+    // Reverse payments: add back what payments had deducted from seller
+    let tempAmount = currentAmount + linkedPaymentAmount;
+    let tempKg = currentKg + linkedPaymentKg;
+
+    // Now remove the transaction itself (or add back if it was an advance/negative)
+    let newAmount: number;
+    let newKg: number;
+    if (isAdvance) {
+      // For advance deletion, amount_added is typically negative. Removing it means adding back its absolute value.
+      newAmount = tempAmount + Math.abs(transactionAmount);
+      newKg = tempKg; // kg doesn't change for advances
+    } else {
+      // For regular purchase deletion, subtract the recorded additions.
+      newAmount = Math.max(0, tempAmount - transactionAmount);
+      newKg = Math.max(0, tempKg - transactionKg);
+    }
+
+    console.log('Calculated values (with payments reversed):', {
+      isAdvance,
+      currentAmount,
+      currentKg,
+      linkedPaymentAmount,
+      linkedPaymentKg,
+      transactionAmount,
+      transactionKg,
+      newAmount,
+      newKg,
+      transactionType
+    });
+
+    // First delete any linked payments so the transaction delete won't violate FKs
+    if (linkedPaymentAmount > 0 || linkedPaymentKg > 0) {
+      console.log('Deleting linked payments for transaction:', { txnId, linkedPaymentAmount, linkedPaymentKg });
+      await client.query('DELETE FROM payments WHERE transaction_id = $1', [txnId]);
+      console.log('Linked payments deleted');
+    }
+
+    // Next delete the transaction
+    console.log('Deleting transaction...');
+    const deleteResult = await client.query(
+      'DELETE FROM seller_transactions WHERE id = $1 AND seller_id = $2 RETURNING *',
+      [txnId, id]
+    );
+    
+    if (deleteResult.rowCount === 0) {
+      throw new Error('Failed to delete transaction - no rows affected');
+    }
+    console.log('Transaction deleted successfully');
+
+    // Then update the seller with the new amounts
+    console.log('Updating seller amounts...');
+    const updateResult = await client.query(
+      'UPDATE sellers SET amount = $1, kg = $2, updated_at = NOW() WHERE id = $3 RETURNING *',
+      [newAmount, newKg, id]
+    );
+    
+    if (updateResult.rowCount === 0) {
+      throw new Error('Failed to update seller amounts - no rows affected');
+    }
+    console.log('Seller amounts updated successfully');
+
+    await client.query('COMMIT');
+    console.log('Transaction committed successfully');
+    
+    return res.json({ 
+      success: true,
+      message: 'Transaction deleted successfully',
+      newAmount,
+      newKg,
+      transactionType
+    });
+  } catch (error) {
+    console.error('Error in delete transaction:', {
+      error,
+      sellerId: id,
+      transactionId: txnId,
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+      stack: error instanceof Error ? error.stack : undefined
+    });
+    
+    try {
+      await client.query('ROLLBACK');
+      console.log('Transaction rolled back');
+    } catch (rollbackError) {
+      console.error('Error rolling back transaction:', rollbackError);
+    }
+    
+    const errorMessage = error instanceof Error ? error.message : 'Failed to delete transaction';
+    return res.status(500).json({ 
+      success: false,
+      error: 'Failed to delete transaction',
+      details: errorMessage,
+      sellerId: id,
+      transactionId: txnId
+    });
+  } finally {
+    client.release(); // Always release the client back to the pool
   }
 });
 
@@ -348,6 +562,11 @@ router.get('/:id/transactions', authenticateToken, async (req: AuthRequest, res:
   const { id } = req.params;
 
   try {
+    // Ensure LW column exists (safe, idempotent)
+    try {
+      await pool.query('ALTER TABLE seller_transactions ADD COLUMN IF NOT EXISTS less_weight DECIMAL(10, 2) DEFAULT 0');
+    } catch {}
+
     // First verify the seller belongs to this user
     const sellerCheck = await pool.query(
       'SELECT id FROM sellers WHERE id = $1 AND owner_id = $2',
@@ -376,29 +595,87 @@ router.get('/:id/transactions', authenticateToken, async (req: AuthRequest, res:
 // Add a transaction record
 router.post('/:id/transactions', authenticateToken, async (req: AuthRequest, res: Response) => {
   const { id } = req.params;
-  const { transaction_date, amount_added, kg_added, previous_amount, previous_kg, new_total_amount, new_total_kg, flower_name, less_weight } = req.body as any;
+  const { 
+    transaction_date, 
+    amount_added, 
+    kg_added, 
+    less_weight,
+    flower_name, 
+    salesman_name, 
+    salesman_mobile, 
+    salesman_address,
+    transaction_type = 'purchase' // Default to 'purchase' for backward compatibility
+  } = req.body as any;
 
   try {
-    // Verify the seller belongs to this user
+    await pool.query('BEGIN');
+
+    // Verify seller exists and belongs to user
     const sellerCheck = await pool.query(
-      'SELECT id FROM sellers WHERE id = $1 AND owner_id = $2',
+      'SELECT * FROM sellers WHERE id = $1 AND owner_id = $2',
       [id, req.userId]
     );
-
     if (sellerCheck.rows.length === 0) {
+      await pool.query('ROLLBACK');
       return res.status(404).json({ error: 'Seller not found' });
     }
+    const seller = sellerCheck.rows[0];
 
-    // Insert transaction
-    const result = await pool.query(
-      `INSERT INTO seller_transactions (seller_id, transaction_date, amount_added, kg_added, previous_amount, previous_kg, new_total_amount, new_total_kg, flower_name, less_weight)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-       RETURNING *`,
-      [id, transaction_date, amount_added, kg_added, previous_amount, previous_kg, new_total_amount, new_total_kg, flower_name || null, (less_weight === undefined || less_weight === null) ? null : less_weight]
+    // Get current values
+    const currentAmount = parseFloat(seller.amount) || 0;
+    const currentKg = parseFloat(seller.kg) || 0;
+
+    // Calculate new totals
+    const amountToAdd = parseFloat(amount_added) || 0;
+    const kgToAdd = parseFloat(kg_added) || 0;
+    
+    // For advance transactions, we allow negative amounts
+    const newAmount = transaction_type === 'advance' 
+      ? currentAmount + amountToAdd  // Can be negative
+      : Math.max(0, currentAmount + amountToAdd);  // Regular purchases can't be negative
+      
+    const newKg = Math.max(0, currentKg + kgToAdd);
+
+    // Update seller with new totals
+    await pool.query(
+      'UPDATE sellers SET amount = $1, kg = $2, updated_at = NOW() WHERE id = $3',
+      [newAmount, newKg, id]
     );
 
+    // Ensure LW column exists and add transaction record
+    await pool.query(
+      'ALTER TABLE seller_transactions ADD COLUMN IF NOT EXISTS less_weight DECIMAL(10, 2) DEFAULT 0'
+    );
+    const lessWeightVal = (() => { const n = Number(less_weight); return isNaN(n) ? 0 : n; })();
+    const result = await pool.query(
+      `INSERT INTO seller_transactions 
+       (seller_id, transaction_date, amount_added, kg_added, less_weight, previous_amount, previous_kg, 
+        new_total_amount, new_total_kg, flower_name, salesman_name, salesman_mobile, 
+        salesman_address, transaction_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+       RETURNING *`,
+      [
+        id,
+        transaction_date || new Date().toISOString().split('T')[0],
+        amountToAdd,
+        kgToAdd,
+        lessWeightVal,
+        currentAmount,
+        currentKg,
+        newAmount,
+        newKg,
+        flower_name,
+        salesman_name,
+        salesman_mobile,
+        salesman_address,
+        transaction_type
+      ]
+    );
+
+    await pool.query('COMMIT');
     res.status(201).json(result.rows[0]);
   } catch (error) {
+    await pool.query('ROLLBACK');
     console.error('Add transaction error:', error);
     res.status(500).json({ error: 'Failed to add transaction' });
   }

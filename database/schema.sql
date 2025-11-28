@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS seller_transactions (
   transaction_date DATE NOT NULL,
   amount_added DECIMAL(10, 2) NOT NULL,
   kg_added DECIMAL(10, 2) NOT NULL,
+  less_weight DECIMAL(10, 2) NOT NULL DEFAULT 0,
   previous_amount DECIMAL(10, 2) NOT NULL DEFAULT 0,
   previous_kg DECIMAL(10, 2) NOT NULL DEFAULT 0,
   new_total_amount DECIMAL(10, 2) NOT NULL,

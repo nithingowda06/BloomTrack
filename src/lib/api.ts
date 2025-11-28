@@ -150,6 +150,7 @@ export const sellerApi = {
     new_total_kg: number;
     flower_name?: string;
     less_weight?: number;
+    transaction_type?: 'purchase' | 'advance';
   }) => {
     return fetchWithAuth(`/sellers/${id}/transactions`, {
       method: 'POST',
@@ -165,6 +166,7 @@ export const sellerApi = {
     salesman_name?: string;
     salesman_mobile?: string;
     salesman_address?: string;
+    transaction_type?: 'purchase' | 'advance';
   }) => {
     return fetchWithAuth(`/sellers/${id}/transactions/${txnId}`, {
       method: 'PUT',
@@ -237,7 +239,7 @@ export const sellerApi = {
   },
 
   deleteSoldToTransaction: async (id: string, saleId: string) => {
-    return fetchWithAuth(`/sellers/${id}/sold-to/${saleId}`, {
+    return fetchWithAuth(`/sellers/sold-to/${saleId}`, {
       method: 'DELETE',
     });
   },
