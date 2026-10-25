@@ -76,8 +76,11 @@ const Payments: React.FC = () => {
     const ownerMobile = (profile && profile.mobile) || '';
 
     const when = new Date(h.paid_at).toLocaleString();
-    const dispFrom = (h as any).display_from || h.from_date;
-    const dispTo = (h as any).display_to || h.to_date;
+    // History receipts must use the range stored on the payment row. Do not
+    // replace it with a localStorage receipt-cache range, which can belong to
+    // another payment and cause unrelated dates to appear on the bill.
+    const dispFrom = h.from_date;
+    const dispTo = h.to_date;
     const range = `${fmtDMY(dispFrom) || 'Start'} → ${fmtDMY(dispTo) || 'End'}`;
 
     // Build detailed rows from transactions within this payment's exact range
@@ -348,9 +351,18 @@ const Payments: React.FC = () => {
   const normDate = (s?: string | null) => {
     if (!s) return '';
     const str = String(s);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+    // PostgreSQL DATE values may arrive as timestamps such as
+    // 2026-07-31T18:30:00.000Z for the local calendar date 2026-08-01.
+    // Preserve the date portion when it is already present instead of using
+    // toISOString(), which shifts it back one day in positive time zones.
+    const datePart = str.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (datePart) return datePart[1];
     const d = new Date(str);
-    return isNaN(d.getTime()) ? str : d.toISOString().slice(0, 10);
+    if (isNaN(d.getTime())) return str;
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
   };
 
   // History (modal at top-right): search by serial, show payments only
@@ -361,11 +373,10 @@ const Payments: React.FC = () => {
   const [histPayments, setHistPayments] = useState<Array<{ id: string; paid_at: string; from_date?: string; to_date?: string; amount: number; cleared_kg: number }>>([]);
   // Client-side fallback: txn IDs that were just cleared in this session (until backend returns links)
   const [clientClearedTxnIds, setClientClearedTxnIds] = useState<Set<string>>(new Set());
-  // Group history rows into a single entry per print action using a time bucket.
-  // This preserves the exact From→To you cleared (e.g., 01/11→06/11) and
-  // prevents older previous ranges from altering it.
+  // Keep each database payment as its own history row. Payments made close
+  // together are still separate payments and must not be merged.
   const groupedHist = useMemo(() => {
-    const BUCKET_MS = 2 * 60 * 1000; // 2 minutes per action window (tighter grouping)
+    const BUCKET_MS = 1; // one millisecond: effectively one bucket per row
     type Row = { id: string; paid_at: string; from_date?: string; to_date?: string; amount: number; cleared_kg: number };
     type Bucket = Row & { display_from?: string; display_to?: string };
     const buckets = new Map<number, Bucket>();
@@ -507,19 +518,24 @@ const Payments: React.FC = () => {
       const dd = String(d.getDate()).padStart(2,'0');
       return `${yy}-${mm}-${dd}`;
     };
-    const from = fromDate ? toLocalStart(fromDate) : null;
-    const to = toDate ? toLocalEnd(toDate) : null;
+    const selectedFrom = fromDate ? toYMD(fromDate) : '';
+    const selectedTo = toDate ? toYMD(toDate) : '';
+    const rangeStart = selectedFrom && selectedTo && selectedFrom > selectedTo
+      ? selectedTo
+      : selectedFrom;
+    const rangeEnd = selectedFrom && selectedTo && selectedFrom > selectedTo
+      ? selectedFrom
+      : selectedTo;
 
     // Track per-transaction data (one entry per update) while still
     // maintaining per-day maps for cleared/advance lookups.
     const perTxn: Array<{ ymd: string; netKg: number; lwKg: number; effKg: number; amount: number }> = [];
     const idsByDay = new Map<string, Set<string>>();
     for (const t of result.txns) {
-      const d = parseTxnDate((t as any).transaction_date || (t as any).created_at);
-      if (from && d < from) continue;
-      if (to && d > to) continue;
-      const yyyy = d.getFullYear(); const mm = String(d.getMonth()+1).padStart(2,'0'); const dd = String(d.getDate()).padStart(2,'0');
-      const ymd = `${yyyy}-${mm}-${dd}`;
+      const rawDate = (t as any).transaction_date || (t as any).created_at;
+      const d = parseTxnDate(rawDate);
+      const ymd = toYMD(rawDate);
+      if (!ymd || (rangeStart && ymd < rangeStart) || (rangeEnd && ymd > rangeEnd)) continue;
       // Collect both possible identifiers to match payment links reliably
       const tidPrimary = (t as any).id ? String((t as any).id) : '';
       const tidAlt = (t as any).transaction_id ? String((t as any).transaction_id) : '';
@@ -588,19 +604,22 @@ const Payments: React.FC = () => {
             const t = toYMD(tRaw);
             const y = ymd;
             if (f && t && y >= f && y <= t) {
-              // Compare calendar dates rather than exact timestamps. PostgreSQL DATE
-              // values can be serialized at midnight UTC, which can make an otherwise
-              // valid payment look newer/older on clients in different time zones.
-              let hasTxnBefore = false;
-              const paidYmd = toYMD((p as any).paid_at || (p as any).created_at);
-              for (const tt of (result?.txns || [])) {
-                const dY = toYMD((tt as any).transaction_date || (tt as any).created_at);
-                if (dY !== y) continue;
-                // A payment clears transactions on or before its payment day.
-                // Same-day transactions are intentionally included.
-                if (paidYmd && dY <= paidYmd) { hasTxnBefore = true; break; }
-              }
-              if (hasTxnBefore) { cleared = true; break; }
+              // The payment's explicit date range is authoritative. Do not
+              // require an additional paid_at/transaction-date comparison;
+              // PostgreSQL DATE values and timestamps can otherwise differ by
+              // one day after serialization.
+              cleared = true;
+              break;
+            }
+          } else if (fRaw && !tRaw && pClearedKg > 0) {
+            // An open-ended payment such as "16/08/2026 -> End" is bounded
+            // by the actual payment date. It must not clear transactions
+            // added after the payment was made.
+            const f = toYMD(fRaw);
+            const paidYmd = toYMD((p as any).paid_at || (p as any).created_at);
+            if (f && paidYmd && ymd >= f && ymd <= paidYmd) {
+              cleared = true;
+              break;
             }
           }
         }
@@ -754,7 +773,7 @@ const Payments: React.FC = () => {
 };
   
 
-  const handlePaid = async (): Promise<boolean> => {
+  const handlePaid = async (): Promise<{ amount: number; kg: number; from?: string; to?: string } | false> => {
     if (!result?.seller) { toast.error("Search a seller first"); return false; }
     // Determine effective clear values from inputs or remaining
     const amtNum = Number(paymentAmount || 0);
@@ -939,7 +958,13 @@ const Payments: React.FC = () => {
       // Prepare receipt details for printing (no dialog)
       const selFromKeyNow = normDate(fromDate);
       const selToKeyNow = normDate(toDate);
-      setReceipt({ amount: Number(effectiveAmountNet||0), kg: Number(effectiveKg||0), from: selFromKeyNow, to: selToKeyNow });
+      const savedReceipt = {
+        amount: Number(effectiveAmountNet || 0),
+        kg: Number(effectiveKg || 0),
+        from: selFromKeyNow,
+        to: selToKeyNow,
+      };
+      setReceipt(savedReceipt);
       if (result?.seller?.id) {
         const commission = Math.max(0, Number(commissionInput || 0));
         const advancePrev = Math.max(0, Number(advanceInput || 0));
@@ -966,7 +991,7 @@ const Payments: React.FC = () => {
         }
       } catch {}
       try { toast.success('Updated. Cleared days are now reflected above.'); } catch {}
-      return true;
+      return savedReceipt;
     } catch (error: any) {
       console.error('Failed to save payment:', error);
       toast.error(error?.message || "Failed to save payment. Nothing was printed.");
@@ -978,7 +1003,7 @@ const Payments: React.FC = () => {
     const saved = await handlePaid();
     if (!saved) return;
     try {
-      await handleDownloadPdf();
+      await handleDownloadPdf(saved);
     } catch {}
   };
 
@@ -1053,27 +1078,22 @@ const Payments: React.FC = () => {
     return { kg, amount };
   }, [result, payments, fromDate, toDate]);
 
-  // Sum of payments within/overlapping the selected range
+  // Sum payments for the exact selected range. An older open-ended payment
+  // such as "16/08/2026 -> End" must not be treated as payment for every
+  // later range, otherwise a new October range can incorrectly show
+  // "Nothing to clear".
   const paidForRange = useMemo(() => {
     if (!result?.seller?.id) return { kg: 0, amount: 0 };
     const selFrom = normDate(fromDate) || '';
     const selTo = normDate(toDate) || '';
     const uiHasNoDates = !selFrom && !selTo;
 
-    const uiStart = selFrom || '0000-00-00';
-    const uiEnd = selTo || '9999-99-99';
-
-    const overlaps = (p: any) => {
-      if (uiHasNoDates) return true;
-      const pFrom = normDate(p.from_date) || '';
-      const pTo = normDate(p.to_date) || '';
-      const pStart = pFrom || '0000-00-00';
-      const pEnd = pTo || '9999-99-99';
-      // overlap if pEnd >= uiStart AND pStart <= uiEnd (lexicographic ok for YYYY-MM-DD)
-      return !(pEnd < uiStart || pStart > uiEnd);
-    };
-
-    const paid = (payments || []).filter(overlaps);
+    const paid = uiHasNoDates
+      ? (payments || [])
+      : (payments || []).filter((p: any) =>
+          (normDate(p.from_date) || '') === selFrom &&
+          (normDate(p.to_date) || '') === selTo
+        );
     const amount = paid.reduce((s, p) => s + Number(p.amount || 0), 0);
     const kg = paid.reduce((s, p) => s + Number(p.cleared_kg || 0), 0);
     return { kg, amount };
@@ -1236,16 +1256,17 @@ const Payments: React.FC = () => {
     return { kg, amount, advance };
   }, [result, fromDate, toDate, payments]);
 
-  const handleDownloadPdf = async () => {
+  const handleDownloadPdf = async (receiptOverride?: { amount: number; kg: number; from?: string; to?: string }) => {
     if (printing) return;
     setPrinting(true);
     if (!result?.seller) { try { toast.error('Search a seller first'); } catch {} return; }
     try { toast.message?.('Generating receipt…'); } catch {}
     // Prefer the receipt context if available (just-paid values)
-    const useFrom = receipt?.from ?? fromDate;
-    const useTo = receipt?.to ?? toDate;
-    const paidAmt = receipt ? Number(receipt.amount || 0) : Number(cleared.clearedAmount || 0);
-    const paidKg = receipt ? Number(receipt.kg || 0) : Number(cleared.clearedKg || 0);
+    const activeReceipt = receiptOverride ?? receipt;
+    const useFrom = activeReceipt?.from ?? fromDate;
+    const useTo = activeReceipt?.to ?? toDate;
+    const paidAmt = activeReceipt ? Number(activeReceipt.amount || 0) : Number(cleared.clearedAmount || 0);
+    const paidKg = activeReceipt ? Number(activeReceipt.kg || 0) : Number(cleared.clearedKg || 0);
     // Build detailed rows from individual transactions within selected range.
     // This ensures that multiple flowers/updates on the same date appear as
     // separate lines in the printed receipt instead of being merged by day.
