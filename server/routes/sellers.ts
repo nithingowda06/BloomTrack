@@ -915,16 +915,22 @@ router.post('/:id/payments', authenticateToken, async (req: AuthRequest, res: Re
     transaction_id?: string;
   };
 
+  const client = await pool.connect();
+
   try {
-    await pool.query('BEGIN');
+    // Use one dedicated connection for the complete transaction. Using
+    // pool.query() for BEGIN/INSERT/UPDATE/COMMIT can distribute those
+    // statements across different pooled connections (especially with Neon),
+    // which makes payment saves unreliable.
+    await client.query('BEGIN');
 
     // Verify seller belongs to user and fetch current values
-    const sellerCheck = await pool.query(
+    const sellerCheck = await client.query(
       'SELECT * FROM sellers WHERE id = $1 AND owner_id = $2',
       [id, req.userId]
     );
     if (sellerCheck.rows.length === 0) {
-      await pool.query('ROLLBACK');
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Seller not found' });
     }
     const seller = sellerCheck.rows[0];
@@ -937,7 +943,7 @@ router.post('/:id/payments', authenticateToken, async (req: AuthRequest, res: Re
     const newKg = Math.max(0, Number(seller.kg) - kg);
 
     // Insert payment
-    const insert = await pool.query(
+    const insert = await client.query(
       `INSERT INTO payments (seller_id, paid_at, from_date, to_date, amount, cleared_kg, notes, transaction_id)
        VALUES ($1, NOW(), $2, $3, $4, $5, $6, $7)
        RETURNING *`,
@@ -945,17 +951,19 @@ router.post('/:id/payments', authenticateToken, async (req: AuthRequest, res: Re
     );
 
     // Update seller current balances
-    await pool.query(
+    await client.query(
       'UPDATE sellers SET amount = $1, kg = $2, updated_at = NOW() WHERE id = $3',
       [newAmt, newKg, id]
     );
 
-    await pool.query('COMMIT');
+    await client.query('COMMIT');
     res.status(201).json(insert.rows[0]);
   } catch (error) {
-    await pool.query('ROLLBACK');
+    try { await client.query('ROLLBACK'); } catch {}
     console.error('Add payment error:', error);
     res.status(500).json({ error: 'Failed to add payment' });
+  } finally {
+    client.release();
   }
 });
 

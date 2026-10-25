@@ -754,8 +754,8 @@ const Payments: React.FC = () => {
 };
   
 
-  const handlePaid = async () => {
-    if (!result?.seller) { toast.error("Search a seller first"); return; }
+  const handlePaid = async (): Promise<boolean> => {
+    if (!result?.seller) { toast.error("Search a seller first"); return false; }
     // Determine effective clear values from inputs or remaining
     const amtNum = Number(paymentAmount || 0);
     const kgNum = Number(paymentWeight || 0);
@@ -793,7 +793,7 @@ const Payments: React.FC = () => {
       effectiveKg = remainingKg;
     }
 
-    if (!(effectiveAmount > 0) && !(effectiveKg > 0)) { toast.error('Nothing to clear'); return; }
+    if (!(effectiveAmount > 0) && !(effectiveKg > 0)) { toast.error('Nothing to clear'); return false; }
     // Apply commission and advance to the amount we actually save to history
     const commissionNum = Math.max(0, Number(commissionInput || 0));
     const advanceNum = Math.max(0, Number(advanceInput || 0));
@@ -966,13 +966,17 @@ const Payments: React.FC = () => {
         }
       } catch {}
       try { toast.success('Updated. Cleared days are now reflected above.'); } catch {}
-    } catch {
-      toast.error("Failed to save payment");
+      return true;
+    } catch (error: any) {
+      console.error('Failed to save payment:', error);
+      toast.error(error?.message || "Failed to save payment. Nothing was printed.");
+      return false;
     } finally { setPaying(false); }
   };
 
   const handleClearAndPrint = async () => {
-    await handlePaid();
+    const saved = await handlePaid();
+    if (!saved) return;
     try {
       await handleDownloadPdf();
     } catch {}
@@ -1658,12 +1662,12 @@ const Payments: React.FC = () => {
               {histSeller && (
                 <div className="text-sm text-muted-foreground">Seller: <span className="font-semibold">{histSeller.serial_number} · {histSeller.name}</span></div>
               )}
-              <div className="overflow-x-auto">
+              <div className="max-h-[60vh] overflow-auto rounded-md border">
                 {groupedHist.length === 0 ? (
                   <div className="text-sm text-muted-foreground">No payments.</div>
                 ) : (
                   <table className="min-w-full text-sm">
-                    <thead className="bg-muted/50">
+                    <thead className="sticky top-0 z-10 bg-muted/95">
                       <tr>
                         <th className="text-left p-2">When</th>
                         <th className="text-left p-2">Range</th>
